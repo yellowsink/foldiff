@@ -58,28 +58,49 @@ To apply the binary diff:
 
 ## Stored file type
 
+all numbers are stored in big-endian, because it is the correct choice :)
+
 - magic bytes, ASCII 'FLDF'
-- version number, `0x24 09 06 01`
-- untouched files (list of following:)
-  * path
-  * [XXH3](https://xxhash.com/) hash
-- delete files (list of following:)
-  * XXH3 hash
-  * path in old folder
-- new files (list of following:)
-  * new XXH3 hash
-  * u64 index into new array
-  * path
-- duplicated files (list of following:)
-  * XXH3 hash
-  * list of paths in old folder
-  * list of paths in new folder
-- patch files (list of following:)
-  * old XXH3 hash
-  * new XXH3 hash
-  * u64 index into patch array
-  * path
-- new files array (list of following):
-  * binary blob of compressed zstd data
-- patch files array (list of following:)
-  * array of zstd compressed patch chunks
+- A messagepack object
+  - version number, `0x24 09 06 01`
+  - untouched files (list of following:)
+    * path
+    * [XXH3](https://xxhash.com/) hash
+  - delete files (list of following:)
+    * XXH3 hash
+    * path in old folder
+  - new files (list of following:)
+    * new XXH3 hash
+    * u64 index into new array
+    * path
+  - duplicated files (list of following:)
+    * XXH3 hash
+    * list of paths in old folder
+    * list of paths in new folder
+  - patch files (list of following:)
+    * old XXH3 hash
+    * new XXH3 hash
+    * u64 index into patch array
+    * path
+- new files:
+  * u64 number of elements
+  * repetition of:
+    * u64 size of blob
+    * binary blob of compressed zstd data
+- patch files:
+  * u64 number of elements
+  * repetition of:
+    * A messagepack array of zstd compressed patch chunks
+
+## Progress
+
+- [ ] Diffing
+ * [ ] Working diff generator
+ * [x] Does not keep blobs in memory
+ * [ ] Multi-threaded
+ * [ ] Does not perform `clone()`s on large objects or in hot paths
+- [ ] Applying
+ * [ ] Working application
+ * [x] Does not keep blobs in memory
+ * [ ] Multi-threaded
+ * [ ] The clone police are happy
