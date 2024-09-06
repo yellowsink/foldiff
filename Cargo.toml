@@ -1,0 +1,13 @@
+[package]
+name = "foldiff"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.86" # error handling
+clap = "4.5.17" # argument parsing
+infer = "0.16.0" # rough file type detection
+rmp-serde = "1.3.0" # creating manifest
+tar = "0.4.41" # tar management
+xdelta3 = "0.1.5" # xdelta diffing
+zstd = "0.13.2" # archive compression
