@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use anyhow::{bail, ensure, Context, Result};
 use rmp_serde::{Deserializer, Serializer};
+use crate::zstddiff;
 
 static VERSION_NUMBER: [u8; 4] = [0x24, 0x09, 0x06, 0x01]; // 2024-09-06 r1
 
@@ -82,7 +83,7 @@ impl Diff {
         Self::default()
     }
 
-    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+    fn write_to(&self, writer: &mut (impl Write+Seek)) -> Result<()> {
         let working_data = if let WorkingData::Diffing(tmp) = &self.working_data { tmp } else { bail!("Cannot call write_to on a Diff with an Applying() working_data"); };
 
         // write magic bytes and version number
@@ -110,11 +111,18 @@ impl Diff {
         }
 
         // write patches
-        //writer.write_all(&(self.blobs_patch.len() as u64).to_be_bytes())?;
-        writer.write_all(&0u64.to_be_bytes())?;
+        writer.write_all(&(working_data.blobs_patch.len() as u64).to_be_bytes())?;
+        //writer.write_all(&0u64.to_be_bytes())?;
 
+        // perform diffing
         for (old_p, new_p) in &working_data.blobs_patch {
-            // TODO: perform diff
+            let mut old = File::open(old_p).context("Failed to open old file for diffing")?;
+            let mut new = File::open(new_p).context("Failed to open new file for diffing")?;
+
+            let ol = old.metadata()?.len();
+            let nl = new.metadata()?.len();
+
+            zstddiff::diff(&mut old, &mut new, &mut *writer, None, Some(ol), Some(nl)).context("Failed to perform diff")?;
         }
 
         Ok(())
@@ -143,7 +151,7 @@ impl Diff {
         let mut deserializer = Deserializer::new(&mut *reader);
         let mut deserialized = Self::deserialize(&mut deserializer).context("Failed to deserialize diff format")?;
         drop(deserializer); // this drops here anyway, but is load-bearing, so make it explicit
-        
+
         // create working data
         let mut working_data = WorkingApplyingData::default();
 
@@ -154,12 +162,12 @@ impl Diff {
         for _ in 0..new_blob_count {
             // keep track of the offset
             working_data.blobs_new.push(reader.stream_position()?);
-            
+
             // read blob length
             let mut len = [0u8, 0, 0, 0, 0, 0, 0, 0];
             reader.read_exact(&mut len).context("Failed to read new file length")?;
             let len = u64::from_be_bytes(len);
-            
+
             // keep track of the offset
             working_data.blobs_new.push(reader.stream_position()?);
             // jump to next file
@@ -173,14 +181,14 @@ impl Diff {
         for _ in 0..patched_blob_count {
             // keep track of the offset
             working_data.blobs_new.push(reader.stream_position()?);
-            
+
             // read through array
             // this is not that efficient but oh well
             let mut deser = Deserializer::new(&mut *reader);
             // lol name collision
             serde::Deserializer::deserialize_any(&mut deser, IgnoredAny).context("Failed to read through patched file data")?;
         }
-        
+
         // set version number and working data
         deserialized.version = version;
         deserialized.working_data = WorkingData::Applying(working_data);

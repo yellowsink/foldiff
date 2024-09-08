@@ -131,6 +131,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fd119d74b830634cea2a0f58bbd0d54540518a14397557951e79340abc28c0"
 
 [[package]]
+name = "countio"
+version = "0.2.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdbee2fbff35a44b492c859b1b2e32e94b631f1d3ea2831dd8393861564180e3"
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -142,6 +148,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "countio",
  "infer",
  "rmp-serde",
  "serde",

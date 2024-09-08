@@ -88,9 +88,12 @@ all numbers are stored in big-endian, because it is the correct choice :)
     * u64 size of blob
     * binary blob of compressed zstd data
 - patch files:
-  * u64 number of elements
+  * u64 number of diffs
   * repetition of:
-    * A messagepack array of zstd compressed patch chunks
+    * u64 number of chunks in this diff
+    * repetition of:
+      * u64 length of diff
+      * binary blob of compressed diff data
 
 ## Progress
 
