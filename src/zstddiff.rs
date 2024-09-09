@@ -52,7 +52,6 @@ pub fn diff(old: &mut (impl Read+Seek), new: &mut (impl Read+Seek), dest: &mut (
     let chunks_n = calc_chunks(num_chunks, nlf);
     let mut chunks = chunks_o.zip(chunks_n).peekable();
 
-    println!("{num_chunks}");
     // write chunk count
     dest.write_all(&(num_chunks as u64).to_be_bytes())?;
 
@@ -104,8 +103,6 @@ pub fn apply(old: &mut (impl Read+Seek), diff: &mut (impl Read+Seek), dest: &mut
     // read number of chunks
     let num_chunks = read_u64(diff)?;
 
-    println!("{num_chunks}");
-
     let mut chunks = calc_chunks(num_chunks as f64, old_len as f64).peekable();
 
     let mut written = 0u64;
@@ -121,7 +118,6 @@ pub fn apply(old: &mut (impl Read+Seek), diff: &mut (impl Read+Seek), dest: &mut
 
         // read length of compressed blob & setup streams
         let diff_c_len = read_u64(diff)?;
-        println!("hey! {}", diff_c_len);
         //diff.seek(SeekFrom::Start(cn1))?;
         let throttled_diff = BufReader::new(diff.take(diff_c_len));
 
