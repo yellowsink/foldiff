@@ -4,6 +4,7 @@ use anyhow::Result;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use zstd::dict::{DecoderDictionary, EncoderDictionary};
 use zstd::{Decoder, Encoder};
+use zstd::zstd_safe::{CParameter, Strategy};
 
 fn length_of(stream: &mut impl Seek) -> Result<u64> {
 	let current_pos = stream.stream_position()?;
@@ -26,7 +27,7 @@ fn calc_chunk_num(
 	let l2 = resolve_len(s2, l2)?;
 	let l1f = l1 as f64;
 	let l2f = l2 as f64;
-	let num_chunks = l1f / ((1u64 << 31) as f64); // 2 GiB (2_147_483_648 bytes)
+	let num_chunks = l1f / (((1u64 << 31)/2) as f64); // 2 GiB (2_147_483_648 bytes)
 	let num_chunks = num_chunks.ceil(); // round up to ensure the chunk size is <=
 
 	Ok((num_chunks, l1, l2, l1f, l2f))
@@ -75,7 +76,9 @@ pub fn diff(
 		let mut dict_chunk = vec![0u8; (co2 - co1) as usize].into_boxed_slice();
 		old.seek(SeekFrom::Start(co1))?;
 		old.read_exact(&mut dict_chunk)?;
-		let dict_chunk = EncoderDictionary::new(&dict_chunk, level); // requires crate `experimental` to elide copy
+		//let dict = EncoderDictionary::new(&dict_chunk, level); // requires crate `experimental` to elide copy
+		let d1 = std::fs::read(".unittest_dict")?;
+		let dict = EncoderDictionary::new(d1.as_slice(), level);
 
 		// prepare streams
 		new.seek(SeekFrom::Start(cn1))?;
@@ -84,11 +87,17 @@ pub fn diff(
 		dest.seek_relative(8)?;
 		let mut counting_writer = countio::Counter::new(&mut *dest);
 
-		let mut enc = Encoder::with_prepared_dictionary(&mut counting_writer, &dict_chunk)?;
+		//let mut enc = Encoder::with_prepared_dictionary(&mut counting_writer, &dict)?;
+		let mut enc = Encoder::with_dictionary(&mut counting_writer, level, d1.as_slice())?;
+		//let mut enc = Encoder::new(&mut counting_writer, level)?;
+		enc.set_parameter(CParameter::CompressionLevel(level))?;
+		//enc.window_log(31)?; // 2GiB
 		enc.long_distance_matching(true)?;
-		enc.set_pledged_src_size(Some(cn2 - cn1))?;
+		//enc.set_pledged_src_size(Some(cn2 - cn1))?;
+		enc.include_dictid(false)?; // not using a trained dictionary
 		enc.include_checksum(false)?; // we do our own redundancy checks
 		enc.include_contentsize(false)?; // not particularly helpful to us
+		//enc.multithread(8)?; // TODO more sophisticated
 
 		// run the compression
 		std::io::copy(&mut throttled_new, &mut enc)?;
@@ -153,9 +162,10 @@ pub fn apply(
 
 #[cfg(test)]
 mod tests {
+	use std::fs::{remove_file, File};
 	use crate::zstddiff::{apply, diff};
-	use rand::random;
-	use std::io::Seek;
+	use rand::{random, RngCore};
+	use std::io::{BufReader, BufWriter, Read, Seek, Write};
 
 	#[test]
 	fn test_zstddiff_small() {
@@ -200,5 +210,120 @@ mod tests {
 		// check if everything is ok
 		assert_eq!(dcsz, 128_000);
 		assert_eq!(*data_new, *final_writer.into_inner());
+	}
+
+	#[test]
+	fn test_zstddiff_large() {
+		// create a file to disk here if one doesnt exist from a previous run
+		let mut old_file =
+			if let Ok(f) = File::open(".unittest_old_file") {
+				f
+			}
+			else {
+				println!("generating an 'old' file...");
+				_ = remove_file(".unittest_new_file");
+				let mut file = File::create_new(".unittest_old_file").expect("Failed to create old file for unit test");
+				let size = 1 * (1u64 << 30); // 5gib
+				let mut written = 0u64;
+
+				// write 512mib at a time
+				let buf = &mut vec![0u8; 512 * 1024 * 1024].into_boxed_slice();
+				assert_eq!((size as usize) % buf.len(), 0);
+				let mut rng = rand::thread_rng();
+				while written < size {
+					rng.fill_bytes(buf);
+					file.write_all(buf).unwrap();
+					written += buf.len() as u64;
+				}
+
+				assert_eq!(written, size);
+
+				file.rewind().unwrap();
+
+				file
+			};
+
+		// now have a slightly different copy of it
+		let mut new_file =
+			if let Ok(f) = File::open(".unittest_new_file") {
+				f
+			}
+			else {
+				println!("generating a 'new' file...");
+				let mut file = File::create_new(".unittest_new_file").expect("Failed to create new file for unit test");
+				let size = old_file.metadata().unwrap().len();
+
+				// scope to give `file` back
+				{
+					let mut bold = BufReader::new(&mut old_file);
+					let mut bnew = BufWriter::new(&mut file);
+
+					const STRIDE_SIZE: u64 = 1024 * 1024; // 1mb
+
+					assert_eq!(size % STRIDE_SIZE, 0);
+					// copy data but change it sometimes
+					//std::io::copy(&mut bold, &mut bnew).unwrap();
+					for _ in 0..(size / STRIDE_SIZE) {
+						let mut buf = [0u8; STRIDE_SIZE as usize];
+						bold.read_exact(&mut buf).unwrap();
+
+						// 200 deviations per mb
+						for _ in 0..200 {
+							buf[(random::<f64>() * (buf.len() as f64)) as usize] = random();
+						}
+
+						bnew.write_all(&buf).unwrap();
+					}
+				}
+
+				file.rewind().unwrap();
+
+				file
+			};
+
+		// NOW PERFORM DIFFING :D
+		println!("diffing to scratch...");
+		if File::open(".unittest_diff_scratch").is_ok() {
+			remove_file(".unittest_diff_scratch").unwrap();
+		}
+		let mut diff_scratch = File::create_new(".unittest_diff_scratch").unwrap();
+
+		let ofl = old_file.metadata().unwrap().len();
+		let nfl = new_file.metadata().unwrap().len();
+		diff(&mut old_file, &mut new_file, &mut diff_scratch, None, Some(ofl), Some(nfl)).expect("dif failed");
+
+		// now apply!
+		println!("applying to scratch...");
+		old_file.rewind().unwrap();
+		diff_scratch.rewind().unwrap();
+
+		if File::open(".unittest_fin_scratch").is_ok() {
+			remove_file(".unittest_fin_scratch").unwrap();
+		}
+		let mut fin_scratch = File::create_new(".unittest_fin_scratch").unwrap();
+
+		apply(&mut old_file, &mut diff_scratch, &mut fin_scratch, None).expect("apply failed");
+
+		// now check equality
+		fin_scratch.rewind().unwrap();
+		new_file.rewind().unwrap();
+
+		println!("verifying output...");
+		loop {
+			// read a buffer from both files
+			let mut buf1 = [0u8; 64 * 1024];
+			let mut buf2 = [0u8; 64 * 1024];
+
+			if new_file.read_exact(&mut buf1).is_err() {
+				break; // EOF
+			}
+			fin_scratch.read_exact(&mut buf2).unwrap();
+
+			assert_eq!(buf1, buf2);
+		}
+
+		println!("pass :tada:");
+		_ = remove_file(".unittest_diff_scratch");
+		_ = remove_file(".unittest_fin_scratch");
 	}
 }
