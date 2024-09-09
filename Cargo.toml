@@ -19,7 +19,7 @@ rand = "0.8.5"
 
 [profile.test]
 #inherits = "release"
-opt-level = 1
+#opt-level = 1
 
 [profile.test.package.rand]
 opt-level = 3

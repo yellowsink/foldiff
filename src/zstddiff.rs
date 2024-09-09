@@ -4,7 +4,7 @@ use anyhow::Result;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use zstd::dict::{DecoderDictionary, EncoderDictionary};
 use zstd::{Decoder, Encoder};
-use zstd::zstd_safe::{CParameter, Strategy};
+use zstd::zstd_safe::CParameter;
 
 fn length_of(stream: &mut impl Seek) -> Result<u64> {
 	let current_pos = stream.stream_position()?;
@@ -73,12 +73,11 @@ pub fn diff(
 		let (co2, cn2) = *chunks.peek().unwrap_or(&(old_len, new_len));
 
 		// read dictionary into memory
-		let mut dict_chunk = vec![0u8; (co2 - co1) as usize].into_boxed_slice();
+		let mut dict_chunk = vec![0u8; (co2 - co1) as usize];//.into_boxed_slice();
 		old.seek(SeekFrom::Start(co1))?;
 		old.read_exact(&mut dict_chunk)?;
-		//let dict = EncoderDictionary::new(&dict_chunk, level); // requires crate `experimental` to elide copy
-		let d1 = std::fs::read(".unittest_dict")?;
-		let dict = EncoderDictionary::new(d1.as_slice(), level);
+		let dict = EncoderDictionary::new(&dict_chunk, level); // requires crate `experimental` to elide copy
+		
 
 		// prepare streams
 		new.seek(SeekFrom::Start(cn1))?;
@@ -86,11 +85,9 @@ pub fn diff(
 		// leave an 8-byte space for the length count
 		dest.seek_relative(8)?;
 		let mut counting_writer = countio::Counter::new(&mut *dest);
-
-		//let mut enc = Encoder::with_prepared_dictionary(&mut counting_writer, &dict)?;
-		let mut enc = Encoder::with_dictionary(&mut counting_writer, level, d1.as_slice())?;
-		//let mut enc = Encoder::new(&mut counting_writer, level)?;
-		enc.set_parameter(CParameter::CompressionLevel(level))?;
+		
+		let mut enc = Encoder::with_prepared_dictionary(&mut counting_writer, &dict)?;
+		/*enc.set_parameter(CParameter::CompressionLevel(level))?;
 		//enc.window_log(31)?; // 2GiB
 		enc.long_distance_matching(true)?;
 		//enc.set_pledged_src_size(Some(cn2 - cn1))?;
@@ -98,7 +95,7 @@ pub fn diff(
 		enc.include_checksum(false)?; // we do our own redundancy checks
 		enc.include_contentsize(false)?; // not particularly helpful to us
 		//enc.multithread(8)?; // TODO more sophisticated
-
+*/
 		// run the compression
 		std::io::copy(&mut throttled_new, &mut enc)?;
 		_ = enc.finish()?;
@@ -162,10 +159,46 @@ pub fn apply(
 
 #[cfg(test)]
 mod tests {
+	use super::*;
+
 	use std::fs::{remove_file, File};
-	use crate::zstddiff::{apply, diff};
 	use rand::{random, RngCore};
 	use std::io::{BufReader, BufWriter, Read, Seek, Write};
+
+	// zstd is entirely ignoring my dictionary so fuck it, let's just test that dictionaries work
+	// *at all* with this setup i guess
+	#[test]
+	fn test_zstd_dict() {
+		// dictionary trained on the Cornell Movie Dialog Corpus' `movie_lines.txt`, available at
+		// https://www.cs.cornell.edu/~cristian/Chameleons_in_imagined_conversations.html
+		// split into chunks of 100 lines with the unix `split` command
+		//let dictionary: &[u8; 112_640] = include_bytes!("../test_assets/cornell-movie-dict");
+		// screw it, use it raw, works fine lol
+		let dictionary = include_bytes!("../test_assets/cornell-movie-lines.txt");
+		let dictionary = EncoderDictionary::new(dictionary, 3);
+
+		// some movie quotes :D
+		// should get about 77% ratio raw and 60% ratio with this dictionary.
+		let quotes = "I’m going to make him an offer he can’t refuse.\
+I do wish we could chat longer, but...I'm having an old friend for dinner. Bye.\
+My mama always said, life was like a box a chocolates. You never know what you’re gonna get.\
+Look at me. Look at me. I'm the captain now.".as_bytes();
+
+		// compress it the boring way
+		let mut target_simple = Vec::new();
+		let mut enc = Encoder::new(&mut target_simple, 3).unwrap();
+		enc.write_all(quotes).unwrap();
+		enc.finish().unwrap();
+
+		// compress it with a dictionary
+		let mut target_dict = Vec::new();
+		let mut enc = Encoder::with_prepared_dictionary(&mut target_dict, &dictionary).unwrap();
+		enc.write_all(quotes).unwrap();
+		enc.finish().unwrap();
+
+		// if the dictionary worked, we'll get a different output
+		assert_ne!(target_simple, target_dict);
+	}
 
 	#[test]
 	fn test_zstddiff_small() {
