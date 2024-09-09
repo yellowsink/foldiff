@@ -150,6 +150,7 @@ dependencies = [
  "clap",
  "countio",
  "infer",
+ "rand",
  "rmp-serde",
  "serde",
  "serde_bytes",

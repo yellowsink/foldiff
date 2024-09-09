@@ -21,7 +21,7 @@ fn calc_chunk_num(s1: &mut impl Seek, s2: &mut impl Seek, l1: Option<u64>, l2: O
     let l2 = resolve_len(s2, l2)?;
     let l1f = l1 as f64;
     let l2f  = l2 as f64;
-    let num_chunks = l1f / ((1 << 31) as f64); // 2 GiB (2_147_483_648 bytes)
+    let num_chunks = l1f / ((1u64 << 31) as f64); // 2 GiB (2_147_483_648 bytes)
     let num_chunks = num_chunks.ceil(); // round up to ensure the chunk size is <=
 
     Ok((num_chunks, l1, l2, l1f, l2f))
@@ -52,6 +52,7 @@ pub fn diff(old: &mut (impl Read+Seek), new: &mut (impl Read+Seek), dest: &mut (
     let chunks_n = calc_chunks(num_chunks, nlf);
     let mut chunks = chunks_o.zip(chunks_n).peekable();
 
+    println!("{num_chunks}");
     // write chunk count
     dest.write_all(&(num_chunks as u64).to_be_bytes())?;
 
@@ -87,7 +88,7 @@ pub fn diff(old: &mut (impl Read+Seek), new: &mut (impl Read+Seek), dest: &mut (
         // write length
         dest.write_all(&diff_len.to_be_bytes())?;
         // seek forward again
-        dest.seek_relative((diff_len + 8) as i64)?;
+        dest.seek_relative(diff_len as i64)?;
     }
 
     Ok(())
@@ -103,10 +104,12 @@ pub fn apply(old: &mut (impl Read+Seek), diff: &mut (impl Read+Seek), dest: &mut
     // read number of chunks
     let num_chunks = read_u64(diff)?;
 
+    println!("{num_chunks}");
+
     let mut chunks = calc_chunks(num_chunks as f64, old_len as f64).peekable();
 
     let mut written = 0u64;
-    
+
     while let Some(co1) = chunks.next() {
         let co2 = *chunks.peek().unwrap_or(&old_len);
 
@@ -115,20 +118,58 @@ pub fn apply(old: &mut (impl Read+Seek), diff: &mut (impl Read+Seek), dest: &mut
         old.seek(SeekFrom::Start(co1))?;
         old.read_exact(&mut dict_chunk)?;
         let dict_chunk = DecoderDictionary::new(&dict_chunk); // requires crate `experimental` to elide copy
-        
+
         // read length of compressed blob & setup streams
         let diff_c_len = read_u64(diff)?;
+        println!("hey! {}", diff_c_len);
         //diff.seek(SeekFrom::Start(cn1))?;
         let throttled_diff = BufReader::new(diff.take(diff_c_len));
-        
-        let mut counter = countio::Counter::new(dest);
-        
+
+        let mut counter = countio::Counter::new(&mut *dest);
+
         // decompress diff
         let mut decoder = Decoder::with_prepared_dictionary(throttled_diff, &dict_chunk)?;
         std::io::copy(&mut decoder, &mut counter)?;
-        
+
         written += counter.writer_bytes() as u64;
     }
 
     Ok(written)
+}
+
+#[test]
+fn test_zstddiff_small() {
+    // 64k
+    let mut data_old = vec![0u8; 64_000];
+    // set some bits
+    for _ in 0..128_000 {
+        let oset = (rand::random::<f64>() * data_old.len() as f64) as usize;
+        data_old[oset] = rand::random();
+    }
+    // change it a bit
+    let mut data_new = data_old.repeat(2);
+    for _ in 0..16_000 {
+        let oset = (rand::random::<f64>() * data_new.len() as f64) as usize;
+        data_new[oset] = rand::random();
+    }
+
+    // diff it!
+    let mut diff_cursor = std::io::Cursor::new(Vec::new());
+
+    // re-borrow to kill the cursor's ability to resize
+    let mut old_reader = std::io::Cursor::new(&*data_old);
+    let mut new_reader = std::io::Cursor::new(&mut *data_new);
+
+    diff(&mut old_reader, &mut new_reader, &mut diff_cursor, None, Some(64_000), None).unwrap();
+
+    // now we have a diff, let's apply it
+    let mut final_writer = std::io::Cursor::new(Vec::new());
+    old_reader.rewind().unwrap();
+    diff_cursor.rewind().unwrap();
+
+    let dcsz = apply(&mut old_reader, &mut diff_cursor, &mut final_writer, None).unwrap();
+
+    // check if everything is ok
+    assert_eq!(dcsz, 128_000);
+    assert_eq!(*data_new, *final_writer.into_inner());
 }

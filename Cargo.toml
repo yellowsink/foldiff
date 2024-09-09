@@ -13,3 +13,6 @@ serde = { version = "1.0.209", features = ["derive"] }
 serde_bytes = "0.11.15"
 twox-hash = "1.6.3"
 zstd = { version = "0.13.2", features = ["experimental"] } # create dictionary by reference
+
+[dev-dependencies]
+rand = "0.8.5"
