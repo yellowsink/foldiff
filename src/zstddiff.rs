@@ -2,9 +2,11 @@
 
 use anyhow::Result;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
-use zstd::dict::{DecoderDictionary, EncoderDictionary};
+use zstd::dict::EncoderDictionary;
 use zstd::{Decoder, Encoder};
-use zstd::zstd_safe::CParameter;
+
+// bytes
+const CHUNK_SIZE: f64 = ((1u64 << 31)/2) as f64; // 1gb
 
 fn length_of(stream: &mut impl Seek) -> Result<u64> {
 	let current_pos = stream.stream_position()?;
@@ -27,7 +29,7 @@ fn calc_chunk_num(
 	let l2 = resolve_len(s2, l2)?;
 	let l1f = l1 as f64;
 	let l2f = l2 as f64;
-	let num_chunks = l1f / (((1u64 << 31)/2) as f64); // 2 GiB (2_147_483_648 bytes)
+	let num_chunks = l1f / CHUNK_SIZE;
 	let num_chunks = num_chunks.ceil(); // round up to ensure the chunk size is <=
 
 	Ok((num_chunks, l1, l2, l1f, l2f))
@@ -76,8 +78,6 @@ pub fn diff(
 		let mut dict_chunk = vec![0u8; (co2 - co1) as usize];//.into_boxed_slice();
 		old.seek(SeekFrom::Start(co1))?;
 		old.read_exact(&mut dict_chunk)?;
-		let dict = EncoderDictionary::new(&dict_chunk, level); // requires crate `experimental` to elide copy
-		
 
 		// prepare streams
 		new.seek(SeekFrom::Start(cn1))?;
@@ -85,17 +85,27 @@ pub fn diff(
 		// leave an 8-byte space for the length count
 		dest.seek_relative(8)?;
 		let mut counting_writer = countio::Counter::new(&mut *dest);
-		
-		let mut enc = Encoder::with_prepared_dictionary(&mut counting_writer, &dict)?;
-		/*enc.set_parameter(CParameter::CompressionLevel(level))?;
-		//enc.window_log(31)?; // 2GiB
+
+		// the results of running GDB on the zstd cli to figure out why --patch-from and -D differ:
+		// we can't use the `with_dictionary` etc functions as those are calling the equivalent of
+		// `ZSTD_CCtx_loadDictionary_byReference`, which writes to cctx.localDict (see following):
+		//    zstd_compress.c:1287:15
+		//    fileio.c:1193:5
+		// whereas we want to use the equivalent of
+		// `ZSTD_CCtx_refPrefix`, which writes to cctx.prefixDict
+		// (see zstd_compress.c:1349:9)
+		// commit hash 6d6d3db in case any lines move around
+		// basically, we want to use a `ref_prefix`, not a dictionary.
+
+		let mut enc = Encoder::with_ref_prefix(&mut counting_writer, level, &dict_chunk)?;
 		enc.long_distance_matching(true)?;
-		//enc.set_pledged_src_size(Some(cn2 - cn1))?;
+		enc.window_log(31)?; // 2GiB (2^31)
+		enc.set_pledged_src_size(Some(cn2 - cn1))?;
 		enc.include_dictid(false)?; // not using a trained dictionary
 		enc.include_checksum(false)?; // we do our own redundancy checks
 		enc.include_contentsize(false)?; // not particularly helpful to us
-		//enc.multithread(8)?; // TODO more sophisticated
-*/
+		enc.multithread(8)?; // TODO more sophisticated
+		
 		// run the compression
 		std::io::copy(&mut throttled_new, &mut enc)?;
 		_ = enc.finish()?;
@@ -138,7 +148,6 @@ pub fn apply(
 		let mut dict_chunk = vec![0u8; (co2 - co1) as usize].into_boxed_slice();
 		old.seek(SeekFrom::Start(co1))?;
 		old.read_exact(&mut dict_chunk)?;
-		let dict_chunk = DecoderDictionary::new(&dict_chunk); // requires crate `experimental` to elide copy
 
 		// read length of compressed blob & setup streams
 		let diff_c_len = read_u64(diff)?;
@@ -148,7 +157,8 @@ pub fn apply(
 		let mut counter = countio::Counter::new(&mut *dest);
 
 		// decompress diff
-		let mut decoder = Decoder::with_prepared_dictionary(throttled_diff, &dict_chunk)?;
+		let mut decoder = Decoder::with_ref_prefix(throttled_diff, &dict_chunk)?;
+		decoder.window_log_max(31)?; // else we OOM
 		std::io::copy(&mut decoder, &mut counter)?;
 
 		written += counter.writer_bytes() as u64;
@@ -161,8 +171,8 @@ pub fn apply(
 mod tests {
 	use super::*;
 
-	use std::fs::{remove_file, File};
 	use rand::{random, RngCore};
+	use std::fs::{remove_file, File};
 	use std::io::{BufReader, BufWriter, Read, Seek, Write};
 
 	// zstd is entirely ignoring my dictionary so fuck it, let's just test that dictionaries work
@@ -175,7 +185,7 @@ mod tests {
 		//let dictionary: &[u8; 112_640] = include_bytes!("../test_assets/cornell-movie-dict");
 		// screw it, use it raw, works fine lol
 		let dictionary = include_bytes!("../test_assets/cornell-movie-lines.txt");
-		let dictionary = EncoderDictionary::new(dictionary, 3);
+		let dictionary = EncoderDictionary::copy(dictionary, 3);
 
 		// some movie quotes :D
 		// should get about 77% ratio raw and 60% ratio with this dictionary.
@@ -253,10 +263,10 @@ Look at me. Look at me. I'm the captain now.".as_bytes();
 				f
 			}
 			else {
-				println!("generating an 'old' file...");
+				eprintln!("generating an 'old' file...");
 				_ = remove_file(".unittest_new_file");
 				let mut file = File::create_new(".unittest_old_file").expect("Failed to create old file for unit test");
-				let size = 1 * (1u64 << 30); // 5gib
+				let size = 5 * (1u64 << 30); // 5gib
 				let mut written = 0u64;
 
 				// write 512mib at a time
@@ -282,7 +292,7 @@ Look at me. Look at me. I'm the captain now.".as_bytes();
 				f
 			}
 			else {
-				println!("generating a 'new' file...");
+				eprintln!("generating a 'new' file...");
 				let mut file = File::create_new(".unittest_new_file").expect("Failed to create new file for unit test");
 				let size = old_file.metadata().unwrap().len();
 
@@ -315,7 +325,7 @@ Look at me. Look at me. I'm the captain now.".as_bytes();
 			};
 
 		// NOW PERFORM DIFFING :D
-		println!("diffing to scratch...");
+		eprintln!("diffing to scratch...");
 		if File::open(".unittest_diff_scratch").is_ok() {
 			remove_file(".unittest_diff_scratch").unwrap();
 		}
@@ -326,7 +336,7 @@ Look at me. Look at me. I'm the captain now.".as_bytes();
 		diff(&mut old_file, &mut new_file, &mut diff_scratch, None, Some(ofl), Some(nfl)).expect("dif failed");
 
 		// now apply!
-		println!("applying to scratch...");
+		eprintln!("applying to scratch...");
 		old_file.rewind().unwrap();
 		diff_scratch.rewind().unwrap();
 
@@ -341,7 +351,7 @@ Look at me. Look at me. I'm the captain now.".as_bytes();
 		fin_scratch.rewind().unwrap();
 		new_file.rewind().unwrap();
 
-		println!("verifying output...");
+		eprintln!("verifying output...");
 		loop {
 			// read a buffer from both files
 			let mut buf1 = [0u8; 64 * 1024];
@@ -355,7 +365,7 @@ Look at me. Look at me. I'm the captain now.".as_bytes();
 			assert_eq!(buf1, buf2);
 		}
 
-		println!("pass :tada:");
+		eprintln!("pass :tada:");
 		_ = remove_file(".unittest_diff_scratch");
 		_ = remove_file(".unittest_fin_scratch");
 	}
