@@ -5,6 +5,7 @@ use serde::{de::IgnoredAny, Deserialize, Serialize};
 use std::fs::File;
 use std::io::{copy, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use crate::hash;
 
 static VERSION_NUMBER: [u8; 4] = [0x24, 0x09, 0x06, 0x01]; // 2024-09-06 r1
 
@@ -12,7 +13,9 @@ static VERSION_NUMBER: [u8; 4] = [0x24, 0x09, 0x06, 0x01]; // 2024-09-06 r1
 /// This struct serializes via messagepack to the manifest chunk of the on-disk format,
 /// but does not include the format header or binary blobs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Diff {
+struct Diff<R: Read+Seek = std::io::Cursor<&'static [u8]>> {
+	// default type of R for convenience, as this is only used for applying
+
 	untouched_files: Vec<HashAndPath>,
 	deleted_files: Vec<HashAndPath>,
 	new_files: Vec<NewFile>,
@@ -21,7 +24,7 @@ struct Diff {
 
 	// do not store the blobs in memory, store instructions to serialize them or find them
 	#[serde(skip)]
-	working_data: WorkingData,
+	working_data: WorkingData<R>,
 	#[serde(skip)]
 	version: [u8; 4], // 0x24 09 06 01
 }
@@ -53,13 +56,13 @@ struct PatchedFile {
 
 /// the part of the diff that is tracking useful data for diffing/applying
 #[derive(Clone, Debug)]
-enum WorkingData {
+enum WorkingData<R: Read+Seek> {
 	Diffing(WorkingDiffingData),
-	Applying(WorkingApplyingData),
+	Applying(WorkingApplyingData<R>),
 }
 
 // ugh.
-impl Default for WorkingData {
+impl<R: Read+Seek> Default for WorkingData<R> {
 	fn default() -> Self {
 		WorkingData::Diffing(Default::default())
 	}
@@ -69,12 +72,17 @@ impl Default for WorkingData {
 struct WorkingDiffingData {
 	blobs_new: Vec<PathBuf>,
 	blobs_patch: Vec<(PathBuf, PathBuf)>, // old, new
+	old_root: PathBuf,
+	new_root: PathBuf,
 }
 
 #[derive(Clone, Debug, Default)]
-struct WorkingApplyingData {
+struct WorkingApplyingData<R: Read+Seek> {
 	blobs_new: Vec<u64>,   // offset into diff file
 	blobs_patch: Vec<u64>, // offset into diff file
+	read: R, // the diff file stream
+	old_root: PathBuf,
+	new_root: PathBuf,
 }
 
 impl Diff {
@@ -82,6 +90,7 @@ impl Diff {
 		Self::default()
 	}
 
+	/// handles finalising an in-memory diffing state to disk
 	fn write_to(&self, writer: &mut (impl Write + Seek)) -> Result<()> {
 		let working_data = if let WorkingData::Diffing(tmp) = &self.working_data {
 			tmp
@@ -144,7 +153,8 @@ impl Diff {
 		self.write_to(&mut f)
 	}
 
-	fn create_from(reader: &mut (impl Read + Seek)) -> Result<Self> {
+	/// handles initialising an in-memory applying state from disk
+	fn read_from(reader: &mut (impl Read + Seek)) -> Result<Self> {
 		// check magic bytes
 		let mut magic = [0u8, 0, 0, 0];
 		reader
@@ -222,13 +232,75 @@ impl Diff {
 		Ok(deserialized)
 	}
 
-	fn create_from_file(path: &Path) -> Result<Self> {
+	fn read_from_file(path: &Path) -> Result<Self> {
 		let mut f = File::open(path).context("Failed to open file to read diff")?;
 
-		Self::create_from(&mut f)
+		Self::read_from(&mut f)
 	}
 
-	// TODO: put the functions to add files here
+	// TODO: finish diffing functionality
+	// TODO: applying functionality
+
+	/// checks if this diff state contains a reference to the given path in the old folder
+	/// this does not check if the hash matches, but does return it if present
+	fn contains_file(&self, root_is_new: bool, path: &Path) -> Option<u64> {
+		if !root_is_new {
+			for (h, p) in &self.deleted_files {
+				if Path::new(p) == path {
+					return Some(*h);
+				}
+			}
+		}
+		
+		for (h, p) in &self.untouched_files {
+			if Path::new(p) == path {
+				return Some(*h);
+			}
+		}
+		
+		if root_is_new {
+			for nf in &self.new_files {
+				if Path::new(&nf.path) == path {
+					return Some(nf.hash);
+				}
+			}
+		}
+
+		for dup in &self.duplicated_files {
+			let paths = if root_is_new { &dup.new_paths } else { &dup.old_paths };
+			
+			if paths.iter().any(|p| Path::new(p) == path) {
+				return Some(dup.hash);
+			}
+		}
+
+		for pat in &self.patched_files {
+			if Path::new(&pat.path) == path {
+				return Some(if root_is_new { pat.new_hash } else { pat.old_hash });
+			}
+		}
+
+		None
+	}
+
+	/// checks if the given path is present in the diff and verifies that it matches the expected hash
+	/// if this returns false, the directory structure on disk does not match that dictated by the state
+	fn verify_contains(&self, root_is_new: bool, path: &Path, root: &Path) -> Result<Option<bool>> {
+		if let Some(hash) = self.contains_file(root_is_new, path) {
+			let hash_actual = hash::hash_file(&root.join(path))?;
+
+			Ok(Some(hash == hash_actual))
+		}
+		else {
+			Ok(None)
+		}
+	}
+
+	/// handles a file in the 'old' folder while in diffing state
+	/// this assumes the passed file does not currently exist in our diff state
+	fn diff_old_file(path: &Path) -> Result<()> {
+		todo!()
+	}
 }
 
 impl Default for Diff {
