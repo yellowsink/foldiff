@@ -1,14 +1,14 @@
-use std::collections::BTreeMap;
-use crate::zstddiff;
+use crate::hash;
+use crate::{cliutils, zstddiff};
 use anyhow::{bail, ensure, Context, Result};
+use derivative::Derivative;
+use indicatif::ProgressBar;
 use rmp_serde::{Deserializer, Serializer};
 use serde::{de::IgnoredAny, Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{copy, Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use derivative::Derivative;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use crate::hash;
 
 static VERSION_NUMBER: [u8; 4] = [0x24, 0x09, 0x06, 0x01]; // 2024-09-06 r1
 
@@ -258,33 +258,16 @@ impl DiffingDiff {
 		Ok(())
 	}
 
-	pub fn scan(old_root: PathBuf, new_root: PathBuf/*, progress: Option<&mut MultiProgress>*/) -> Result<Self> {
+	pub fn scan(old_root: PathBuf, new_root: PathBuf) -> Result<Self> {
 		let mut new_self = Self::new(old_root, new_root);
 
-		let create_spinner = |msg: &'static str| {
-			/*progress.as_ref().map(|prog|
-				prog.add(*/Some(ProgressBar::new_spinner()
-				.with_style(ProgressStyle::with_template("{spinner} [{pos} entries] {msg}").unwrap())
-				.with_message(msg))/*)
-			)*/
-		};
+		let bar = cliutils::create_spinner("Scanning old files");
+		new_self.scan_internal(Path::new(""), false, Some(&bar))?;
+		cliutils::finish_spinner(&bar);
 
-		let finish_spinner = |sp: &Option<ProgressBar>| {
-			sp.as_ref().map(|s| {
-				s.set_style(ProgressStyle::with_template(
-					&console::style("{spinner} [{pos} entries] {msg}").green().to_string()
-				).unwrap());
-				s.abandon();
-			})
-		};
-
-		let bar = create_spinner("Scanning old files");
-		new_self.scan_internal(Path::new(""), false, bar.as_ref())?;
-		finish_spinner(&bar);
-
-		let bar = create_spinner("Scanning new files");
-		new_self.scan_internal(Path::new(""), true, bar.as_ref())?;
-		finish_spinner(&bar);
+		let bar = cliutils::create_spinner("Scanning new files");
+		new_self.scan_internal(Path::new(""), true, Some(&bar))?;
+		cliutils::finish_spinner(&bar);
 
 		Ok(new_self)
 	}

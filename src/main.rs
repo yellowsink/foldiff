@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 mod foldiff;
 mod zstddiff;
 mod hash;
+mod cliutils;
 
 #[derive(Parser, Debug)]
 #[command(version = "2023-09-06.r1", about)]
@@ -40,8 +41,8 @@ enum Commands {
 
 fn main() -> Result<()> {
 	// attach debugger
-	//dialoguer::Confirm::new().interact()?;
-	
+	//cliutils::confirm("")?;
+
 	let cli = Cli::parse();
 
 	match &cli.command {
@@ -64,25 +65,21 @@ fn main() -> Result<()> {
 
 				if !cli.force {
 					// check first!
-					let cont = dialoguer::Confirm::new()
-						.with_prompt("Output diff file exists, overwrite it?")
-						.interact()?;
+					let cont = cliutils::confirm("Output diff file exists, overwrite it?")?;
 
 					if !cont { bail!("Output diff file already exists"); }
 				}
 
 				std::fs::remove_file(diff).context("Failed to remove file")?;
 			}
-			
-			//let mut prog = indicatif::MultiProgress::new();
 
 			// scan the file system
-			let diff_state = foldiff::DiffingDiff::scan(old_root, new_root/*, Some(&mut prog)*/)?;
+			let diff_state = foldiff::DiffingDiff::scan(old_root, new_root)?;
 			//println!("{diff_state:?}");
 
 			// emit the diff to disk
 			//diff_state.write_to_file(Path::new(diff))?;
-			dialoguer::Confirm::new().with_prompt("this is just here to stop the app dying so i can measure ram").interact()?;
+			cliutils::confirm("this is just here to stop the app dying so i can measure ram")?;
 
 		}
 		Commands::Apply { .. } => {
