@@ -74,12 +74,11 @@ fn main() -> Result<()> {
 			}
 
 			// scan the file system
-			let diff_state = foldiff::DiffingDiff::scan(old_root, new_root)?;
+			let mut diff_state = foldiff::DiffingDiff::scan(old_root, new_root)?;
 			//println!("{diff_state:?}");
 
 			// emit the diff to disk
-			//diff_state.write_to_file(Path::new(diff))?;
-			cliutils::confirm("this is just here to stop the app dying so i can measure ram")?;
+			diff_state.write_to_file(Path::new(diff))?;
 
 		}
 		Commands::Apply { .. } => {
