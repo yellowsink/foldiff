@@ -1,11 +1,14 @@
 [package]
 name = "foldiff"
+authors = ["Hazel Atkinson"]
 version = "0.1.0"
 edition = "2021"
+license-file = "LICENSE.md"
+description = "A general purpose diffing tool that operates on folders of mixed text/binary files."
 
 [dependencies]
 anyhow = "1.0.86"
-clap = "4.5.17"
+clap = { version = "4.5.17", features = ["derive"] }
 countio = "0.2.19"
 derivative = "2.2.0"
 infer = "0.16.0"
@@ -14,6 +17,7 @@ serde = { version = "1.0.209", features = ["derive"] }
 serde_bytes = "0.11.15"
 twox-hash = "1.6.3"
 zstd = { version = "0.13.2", features = ["zstdmt"] } # create dictionary by reference
+dialoguer = { version = "0.11.0", features = [] }
 
 [dev-dependencies]
 rand = "0.8.5"
