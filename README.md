@@ -97,13 +97,11 @@ all numbers are stored in big-endian, because it is the correct choice :)
 
 ## Progress
 
-- [ ] Diffing
- * [ ] Working diff generator
+- [x] Diffing
+ * [x] Working diff generator
  * [x] Does not keep blobs in memory
  * [ ] Multi-threaded
- * [ ] Does not perform `clone()`s on large objects or in hot paths
 - [ ] Applying
  * [ ] Working application
  * [x] Does not keep blobs in memory
  * [ ] Multi-threaded
- * [ ] The clone police are happy
