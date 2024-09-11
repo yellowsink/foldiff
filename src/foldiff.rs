@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io::{copy, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use derivative::Derivative;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use crate::hash;
 
 static VERSION_NUMBER: [u8; 4] = [0x24, 0x09, 0x06, 0x01]; // 2024-09-06 r1
@@ -150,13 +151,6 @@ impl DiffingDiff {
 			..Default::default()
 		}
 	}
-	
-	pub fn scan(old_root: PathBuf, new_root: PathBuf) -> Result<Self> {
-		//let mut new_self = Self::new(old_root, new_root);
-		
-		
-		todo!()
-	}
 
 	/// generates the on-disk manifest format from the in-memory working data
 	pub fn generate_manifest(&self) -> DiffManifest {
@@ -228,7 +222,7 @@ impl DiffingDiff {
 	/// you should not pass a file that is already in the diff - this will return an Err
 	fn add_file(&mut self, in_new: bool, path: &Path) -> Result<()> {
 		// check if the path is already there
-		let paths = if in_new { &self.file_paths_new } else { &self.file_paths_old };
+		let paths = if in_new { &mut self.file_paths_new } else { &mut self.file_paths_old };
 		if paths.contains_key(path) {
 			bail!("Attempting to add a file to the diff that already exists")
 		}
@@ -236,20 +230,19 @@ impl DiffingDiff {
 		let root = if in_new { &self.new_root } else { &self.old_root };
 
 		// first, hash it
-		let hash = hash::hash_file(&root.join(path))?;
-
-		let self_paths = if in_new { &mut self.file_paths_new } else { &mut self.file_paths_old };
+		let resolved_path = root.join(path);
+		let hash = hash::hash_file(&resolved_path)?;
 
 		// get working state
 		if let Some(state) = self.files.get_mut(&hash) {
 			// add our path
 			let state_paths = if in_new { &mut state.paths_new } else { &mut state.paths_old };
 			state_paths.push(path.to_path_buf());
-			self_paths.insert(path.to_path_buf(), hash);
+			paths.insert(path.to_path_buf(), hash);
 		}
 		else {
 			// perform file type inference
-			let inferred_type = infer::get_from_path(path)?.map(|t| t.mime_type());
+			let inferred_type = infer::get_from_path(&resolved_path).context("Failed to infer file type")?.map(|t| t.mime_type());
 
 			let new_state = DiffingFileData {
 				inferred_mime: inferred_type,
@@ -257,7 +250,7 @@ impl DiffingDiff {
 				paths_new: if in_new { vec![path.to_path_buf()] } else { vec![] }
 			};
 
-			self_paths.insert(path.to_path_buf(), hash);
+			paths.insert(path.to_path_buf(), hash);
 
 			self.files.insert(hash, new_state);
 		}
@@ -265,7 +258,77 @@ impl DiffingDiff {
 		Ok(())
 	}
 
-	// TODO: finish diffing functionality
+	pub fn scan(old_root: PathBuf, new_root: PathBuf/*, progress: Option<&mut MultiProgress>*/) -> Result<Self> {
+		let mut new_self = Self::new(old_root, new_root);
+
+		let create_spinner = |msg: &'static str| {
+			/*progress.as_ref().map(|prog|
+				prog.add(*/Some(ProgressBar::new_spinner()
+				.with_style(ProgressStyle::with_template("{spinner} [{pos} entries] {msg}").unwrap())
+				.with_message(msg))/*)
+			)*/
+		};
+
+		let finish_spinner = |sp: &Option<ProgressBar>| {
+			sp.as_ref().map(|s| {
+				s.set_style(ProgressStyle::with_template(
+					&console::style("{spinner} [{pos} entries] {msg}").green().to_string()
+				).unwrap());
+				s.abandon();
+			})
+		};
+
+		let bar = create_spinner("Scanning old files");
+		new_self.scan_internal(Path::new(""), false, bar.as_ref())?;
+		finish_spinner(&bar);
+
+		let bar = create_spinner("Scanning new files");
+		new_self.scan_internal(Path::new(""), true, bar.as_ref())?;
+		finish_spinner(&bar);
+
+		Ok(new_self)
+	}
+
+	fn scan_internal(&mut self, dir: &Path, new: bool, spinner: Option<&ProgressBar>) -> Result<()> {
+		let root = if new { &self.new_root } else { &self.old_root };
+		// we need to clone this, aw
+		let root = root.clone();
+
+		// read all files in the root
+		let entries = std::fs::read_dir(root.join(dir)).with_context(|| format!("Failed to read dir while scanning {dir:?}"))?;
+
+		for entry in entries {
+			let entry = entry.with_context(|| format!("Failed to read entry while scanning {dir:?}"))?;
+
+			// tick!
+			if let Some(s) = spinner {
+				s.inc(1);
+			}
+
+			// are we a directory or a file?
+			let ftype = entry.file_type().context("While reading entry type")?;
+			if ftype.is_symlink() {
+				bail!("Entry at '{:?}' is a symlink, bailing", entry.path());
+			}
+			if ftype.is_dir() {
+				// recurse
+				self.scan_internal(&entry.path(), new, spinner)?;
+			}
+			else {
+				// file found!
+				// strip the root off the front of the path
+				// else we get errors in add_file
+				let path = entry.path();
+				let path = path.strip_prefix(&root)?;
+				self.add_file(new, path).context("While adding file to diff")?;
+			}
+
+			// sleep for progress bar testing
+			//std::thread::sleep_ms(600);
+		}
+
+		Ok(())
+	}
 }
 
 impl ApplyingDiff {
@@ -352,11 +415,11 @@ impl ApplyingDiff {
 	}
 
 	// TODO: applying functionality
-	
+
 	fn apply(&mut self, old_root: PathBuf, new_root: PathBuf) -> Result<()> {
 		self.old_root = old_root;
 		self.new_root = new_root;
-		
+
 		todo!()
 	}
 }

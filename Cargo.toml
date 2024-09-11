@@ -18,6 +18,8 @@ serde_bytes = "0.11.15"
 twox-hash = "1.6.3"
 zstd = { version = "0.13.2", features = ["zstdmt"] } # create dictionary by reference
 dialoguer = { version = "0.11.0", features = [] }
+indicatif = "0.17.8"
+console = "0.15.8"
 
 [dev-dependencies]
 rand = "0.8.5"

@@ -39,6 +39,9 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+	// attach debugger
+	//dialoguer::Confirm::new().interact()?;
+	
 	let cli = Cli::parse();
 
 	match &cli.command {
@@ -68,16 +71,18 @@ fn main() -> Result<()> {
 					if !cont { bail!("Output diff file already exists"); }
 				}
 
-				std::fs::remove_file(diff)?;
+				std::fs::remove_file(diff).context("Failed to remove file")?;
 			}
-
+			
+			//let mut prog = indicatif::MultiProgress::new();
 
 			// scan the file system
-			let diff_state = foldiff::DiffingDiff::scan(old_root, new_root)?;
-			println!("{diff_state:?}");
+			let diff_state = foldiff::DiffingDiff::scan(old_root, new_root/*, Some(&mut prog)*/)?;
+			//println!("{diff_state:?}");
 
 			// emit the diff to disk
-			diff_state.write_to_file(Path::new(diff))?;
+			//diff_state.write_to_file(Path::new(diff))?;
+			dialoguer::Confirm::new().with_prompt("this is just here to stop the app dying so i can measure ram").interact()?;
 
 		}
 		Commands::Apply { .. } => {
