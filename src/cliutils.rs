@@ -14,6 +14,7 @@ static SPINNER_TICKS: &[&str] = &["⠙","⠸","⢰","⣠","⣄","⡆","⠇","⠋
 // default: "⠁⠁⠉⠙⠚⠒⠂⠂⠒⠲⠴⠤⠄⠄⠤⠠⠠⠤⠦⠖⠒⠐⠐⠒⠓⠋⠉⠈⠈ "
 
 static PROGRESS_TEMPLATE: &str = "{spinner} [{percent:>3}% {pos:>3}/{len:3}] {msg} {wide_bar}";
+static PROGRESS_TEMPLATE_FINISHED: &str = "{spinner} [{percent:>3}% {pos:>3}/{len:3}] {msg}";
 //static PROGRESS_TICKS: &[&str] = &[" ", "✓"];
 
 static SPINNER_STYLE_COUNT: LazyLock<ProgressStyle> = LazyLock::new(|| {
@@ -40,7 +41,7 @@ static PROGRESS_STYLE: LazyLock<ProgressStyle> = LazyLock::new(|| {
 
 static PROGRESS_STYLE_FINISHED: LazyLock<ProgressStyle> = LazyLock::new(|| {
 	ProgressStyle::with_template(
-		&console::style(PROGRESS_TEMPLATE).green().to_string()
+		&console::style(PROGRESS_TEMPLATE_FINISHED).green().to_string()
 	).unwrap().tick_strings(SPINNER_TICKS)
 });
 
