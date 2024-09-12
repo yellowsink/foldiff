@@ -1,6 +1,6 @@
 use anyhow::Result;
 use dialoguer::Confirm;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -45,12 +45,14 @@ static PROGRESS_STYLE_FINISHED: LazyLock<ProgressStyle> = LazyLock::new(|| {
 	).unwrap().tick_strings(SPINNER_TICKS)
 });
 
-pub fn create_spinner(msg: &str, count: bool) -> ProgressBar {
+pub fn create_spinner(msg: &str, count: bool, auto: bool) -> ProgressBar {
 	let s = ProgressBar::new_spinner().with_message(msg.to_string()).with_style(
 		if count { SPINNER_STYLE_COUNT.clone() } else { SPINNER_STYLE_SIMPLE.clone() }
 	);
-	s.enable_steady_tick(Duration::from_millis(50));
-	s.tick();
+	if auto {
+		s.enable_steady_tick(Duration::from_millis(50));
+		s.tick();
+	}
 	s
 }
 
@@ -61,10 +63,12 @@ pub fn finish_spinner(s: &ProgressBar, count: bool) {
 	s.abandon();
 }
 
-pub fn create_bar(msg: &str, len: u64) -> ProgressBar {
+pub fn create_bar(msg: &str, len: u64, auto: bool) -> ProgressBar {
 	let b = ProgressBar::new(len).with_message(msg.to_string()).with_style(PROGRESS_STYLE.clone());
-	b.enable_steady_tick(Duration::from_millis(50));
-	b.tick();
+	if auto {
+		b.enable_steady_tick(Duration::from_millis(50));
+		b.tick();
+	}
 	b
 }
 

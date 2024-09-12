@@ -38,3 +38,25 @@ pub fn hash_stream(s: &mut impl Read) -> std::io::Result<u64> {
 pub fn hash_file(p: &Path) -> anyhow::Result<u64> {
 	Ok(hash_stream(&mut File::open(p)?)?)
 }
+
+pub struct HashWriter<W: Write>(Hasher, W);
+
+impl<W: Write> Write for HashWriter<W> {
+	fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+		_ = self.0.write(buf).unwrap(); // infallible
+		self.1.write(buf)
+	}
+	fn flush(&mut self) -> std::io::Result<()> {
+		self.1.flush()
+	}
+}
+
+impl<W: Write> HashWriter<W> {
+	pub fn new(w: W) -> Self {
+		Self(Hasher::default(), w)
+	}
+	
+	pub fn finish(&self) -> u64 {
+		self.0.finish()
+	}
+}

@@ -1,12 +1,13 @@
 use anyhow::{bail, ensure, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
-use crate::foldiff::FldfCfg;
+use crate::foldiff::{ApplyingDiff, DiffingDiff, FldfCfg};
 
 mod foldiff;
 mod zstddiff;
 mod hash;
 mod cliutils;
+mod utilities;
 
 fn fetch_logical_procs() -> u32 {
 	num_cpus::get() as u32
@@ -61,6 +62,15 @@ enum Commands {
 		diff: String,
 		/// Path to where to create the "new" folder
 		new: String,
+	},
+	/// Check that two folders are identical, or that they match a given diff file
+	Verify {
+		/// Path to the source / "old" folder
+		old: String,
+		/// Path to the "new" folder
+		new: String,
+		/// If supplied, the path to the diff to verify against. If not supplied, just checks if the folders are identical
+		diff: Option<String>
 	}
 }
 
@@ -113,14 +123,14 @@ fn main() -> Result<()> {
 			}
 
 			// scan the file system
-			let mut diff_state = foldiff::DiffingDiff::scan(old_root, new_root)?;
+			let mut diff_state = DiffingDiff::scan(old_root, new_root)?;
 			//println!("{diff_state:?}");
 
 			// emit the diff to disk
 			diff_state.write_to_file(Path::new(diff), &cfg)?;
 
 		}
-		Commands::Apply { .. } => {
+		Commands::Apply { old, diff, new } => {
 			let cfg = FldfCfg {
 				threads,
 				// levels are irrelevant
@@ -128,8 +138,28 @@ fn main() -> Result<()> {
 				level_diff: 0
 			};
 
-			todo!()
-		}
+			let old_root: PathBuf = old.into();
+			let new_root: PathBuf = new.into();
+			// check existence
+			ensure!(std::fs::metadata(&old_root).context("old path must exist")?.is_dir(), "old path must be a directory");
+			ensure!(std::fs::metadata(diff).context("diff must exist")?.is_file(), "diff must be a file");
+			
+			// check for out folder existence and possibly delete it
+			if std::fs::exists(&new_root).context("Failed to check for output existence")? {
+				if !cli.force {
+					// check first!
+					let cont = cliutils::confirm("Output folder exists, overwrite it?")?;
+
+					if !cont { bail!("Output folder already exists"); }
+				}
+
+				std::fs::remove_dir_all(diff).context("Failed to remove folder")?;
+			}
+
+			let (mut diff_state, mut f) = ApplyingDiff::read_from_file(&PathBuf::from(diff))?;
+			diff_state.apply(old_root, new_root, &mut f, &cfg)?;
+		},
+		Commands::Verify { .. } => todo!(),
 	}
 
 	Ok(())

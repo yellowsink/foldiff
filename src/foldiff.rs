@@ -1,15 +1,17 @@
-use crate::hash;
+use crate::{handle_res_async, hash, throw_err_async};
 use crate::{cliutils, zstddiff};
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use derivative::Derivative;
-use indicatif::ProgressBar;
+use indicatif::{MultiProgress, ProgressBar};
 use rmp_serde::{Deserializer, Serializer};
 use serde::{de::IgnoredAny, Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{copy, Read, Seek, Write};
+use std::io::{copy, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
+use crate::utilities::ReadSeekBroker;
 
 static VERSION_NUMBER: [u8; 4] = [0x24, 0x09, 0x06, 0x01]; // 2024-09-06 r1
 
@@ -177,7 +179,7 @@ impl DiffingDiff {
 		writer.write_all(&(self.blobs_new.len() as u64).to_be_bytes())?;
 
 		if !self.blobs_new.is_empty() {
-			let bar = cliutils::create_bar("Compressing new files", self.blobs_new.len() as u64);
+			let bar = cliutils::create_bar("Compressing new files", self.blobs_new.len() as u64, true);
 			for path in &self.blobs_new {
 				let mut f =
 					File::open(self.new_root.join(path)).context("Failed to open file while copying newly added files")?;
@@ -206,10 +208,10 @@ impl DiffingDiff {
 		// write patches
 		writer.write_all(&(self.blobs_patch.len() as u64).to_be_bytes())?;
 		//writer.write_all(&0u64.to_be_bytes())?;
-		
+
 		// perform diffing
 		if !self.blobs_patch.is_empty() {
-			let bar = cliutils::create_bar("Diffing changed files", self.blobs_patch.len() as u64);
+			let bar = cliutils::create_bar("Diffing changed files", self.blobs_patch.len() as u64, true);
 			for p in &self.blobs_patch {
 				let mut old = File::open(self.old_root.join(p)).context("Failed to open old file for diffing")?;
 				let mut new = File::open(self.new_root.join(p)).context("Failed to open new file for diffing")?;
@@ -251,7 +253,7 @@ impl DiffingDiff {
 
 		// this is *so* fast that i'm not even going to bother with a progress bar.
 		//let bar = cliutils::create_bar("Sorting scanned files", self.files.len() as u64);
-		let spn = cliutils::create_spinner("Sorting scanned files", false);
+		let spn = cliutils::create_spinner("Sorting scanned files", false, true);
 		spn.enable_steady_tick(Duration::from_millis(150));
 
 		// mime types of stored patches and of new files
@@ -412,11 +414,11 @@ impl DiffingDiff {
 	pub fn scan(old_root: PathBuf, new_root: PathBuf) -> Result<Self> {
 		let mut new_self = Self::new(old_root, new_root);
 
-		let bar = cliutils::create_spinner("Scanning old files", true);
+		let bar = cliutils::create_spinner("Scanning old files", true, true);
 		new_self.scan_internal(Path::new(""), false, Some(&bar))?;
 		cliutils::finish_spinner(&bar, true);
 
-		let bar = cliutils::create_spinner("Scanning new files", true);
+		let bar = cliutils::create_spinner("Scanning new files", true, true);
 		new_self.scan_internal(Path::new(""), true, Some(&bar))?;
 		cliutils::finish_spinner(&bar, true);
 
@@ -467,7 +469,7 @@ impl DiffingDiff {
 
 impl ApplyingDiff {
 	/// handles initialising an in-memory applying state from disk
-	fn read_from(reader: &mut (impl Read + Seek)) -> Result<Self> {
+	pub fn read_from(reader: &mut (impl Read + Seek)) -> Result<Self> {
 		// check magic bytes
 		let mut magic = [0u8, 0, 0, 0];
 		reader
@@ -542,18 +544,108 @@ impl ApplyingDiff {
 		Ok(new_self)
 	}
 
-	fn read_from_file(path: &Path) -> Result<Self> {
+	pub fn read_from_file(path: &Path) -> Result<(Self, File)> {
 		let mut f = File::open(path).context("Failed to open file to read diff")?;
 
-		Self::read_from(&mut f)
+		let res = Self::read_from(&mut f)?;
+		f.rewind()?;
+		Ok((res, f))
 	}
 
-	// TODO: applying functionality
-
-	fn apply(&mut self, old_root: PathBuf, new_root: PathBuf) -> Result<()> {
+	pub fn apply(&mut self, old_root: PathBuf, new_root: PathBuf, reader: &mut (impl Read+Seek+Send), cfg: &FldfCfg) -> Result<()> {
 		self.old_root = old_root;
 		self.new_root = new_root;
 
-		todo!()
+		let num_duped_files: u64 = self.manifest.duplicated_files.iter().map(|d| (d.old_paths.len() + d.new_paths.len()) as u64).sum();
+
+		// incr bar and finish if done
+		let inc = |b: &ProgressBar| {
+			b.inc(1);
+			if Some(b.position()) == b.length() {
+				cliutils::finish_bar(b);
+			}
+		};
+
+		// progress reporting
+		let wrap = MultiProgress::new();
+		let spn = wrap.add(cliutils::create_spinner("Applying diff", false, false));
+		let bar_untouched = wrap.add(cliutils::create_bar("Copying unchanged files", (self.manifest.untouched_files.len() as u64)  + num_duped_files, false));
+		let bar_new = wrap.add(cliutils::create_bar("Creating new files", self.manifest.new_files.len() as u64, false));
+		let bar_patched = wrap.add(cliutils::create_bar("Applying patched files", self.manifest.patched_files.len() as u64, false));
+
+		// need to do this manually because of it being in a wrap
+		for b in [&spn, &bar_untouched, &bar_new, &bar_patched] {
+			b.enable_steady_tick(Duration::from_millis(50));
+		}
+
+		// let's spawn some threads!
+		let read_broker = ReadSeekBroker::new(reader);
+		let errs = Mutex::new(Vec::new());
+		rayon::ThreadPoolBuilder::new()
+			.num_threads(cfg.threads as usize)
+			.use_current_thread()
+			.build()?
+			.scope(|s| {
+				if self.manifest.untouched_files.is_empty() {
+					bar_untouched.finish_and_clear();
+				} else {
+					s.spawn(|_| {
+						// handle untouched files
+						for (h, p) in &self.manifest.untouched_files {
+							// std:;fs::copy would be faster, but we want to verify the hash
+							let mut src = handle_res_async!(errs, File::open(self.old_root.join(p)), "Failed to open file to copy from {}", p);
+							let mut dst = handle_res_async!(errs, File::open(self.new_root.join(p)), "Failed to open file to copy to {}", p);
+
+							let mut hw = hash::HashWriter::new(&mut dst);
+							handle_res_async!(errs, std::io::copy(&mut src, &mut hw), "Failed to copy file {}", p);
+
+							let rh = hw.finish();
+							if rh != *h {
+								throw_err_async!(errs, anyhow!("Found {p} was different to expected (hash was {rh}, not {})", *h));
+							}
+
+							inc(&bar_untouched);
+						}
+					});
+				}
+				if self.manifest.new_files.is_empty() {
+					bar_new.finish_and_clear();
+				}
+				else {
+					s.spawn(|_| {
+						// handle new files
+						for nf in &self.manifest.new_files {
+							let blob = if let Some(t) = self.blobs_new.get(nf.index as usize) {
+									*t
+								}
+								else {
+									throw_err_async!(errs, anyhow!("new file {} had an out-of-range index pointing to its data", nf.path));
+								};
+							
+							// create new file
+							let mut dest = handle_res_async!(errs, File::create(self.new_root.join(&nf.path)), "Failed to create {} to write new file", &nf.path);
+							
+							
+							// get blob ready
+							let mut read = read_broker.create_reader();
+							handle_res_async!(errs, read.seek(SeekFrom::Start(blob)), "Failed to seek diff to read new file data");
+							
+							// copy and decompress
+							
+						}
+					});
+				}
+			});
+
+		let mut errs = errs.lock().unwrap();
+		if !errs.is_empty() {
+			if errs.len() == 1 {
+				return Err(errs.pop().unwrap());
+			}
+			bail!("Failed with multiple errors:\n{}", errs.iter().map(|e| format!("{e:?}")).reduce(|a, b| a + "\n" + &*b).unwrap())
+		}
+
+		cliutils::finish_spinner(&spn, false);
+		Ok(())
 	}
 }
