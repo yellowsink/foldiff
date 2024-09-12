@@ -55,7 +55,8 @@ pub fn diff(
 	old: &mut (impl Read + Seek),
 	new: &mut (impl Read + Seek),
 	dest: &mut (impl Write + Seek),
-	level: Option<i32>,
+	level: Option<u8>,
+	threads: Option<u32>,
 	old_len_hint: Option<u64>,
 	new_len_hint: Option<u64>,
 ) -> Result<()> {
@@ -97,14 +98,16 @@ pub fn diff(
 		// commit hash 6d6d3db in case any lines move around
 		// basically, we want to use a `ref_prefix`, not a dictionary.
 
-		let mut enc = Encoder::with_ref_prefix(&mut counting_writer, level, &dict_chunk)?;
+		let mut enc = Encoder::with_ref_prefix(&mut counting_writer, level as i32, &dict_chunk)?;
 		enc.long_distance_matching(true)?;
 		enc.window_log(31)?; // 2GiB (2^31)
 		enc.set_pledged_src_size(Some(cn2 - cn1))?;
 		enc.include_dictid(false)?; // not using a trained dictionary
 		enc.include_checksum(false)?; // we do our own redundancy checks
 		enc.include_contentsize(false)?; // not particularly helpful to us
-		enc.multithread(8)?; // TODO more sophisticated
+		if let Some(t) = threads {
+			enc.multithread(t)?;
+		}
 		
 		// run the compression
 		std::io::copy(&mut throttled_new, &mut enc)?;
@@ -238,6 +241,7 @@ Look at me. Look at me. I'm the captain now.".as_bytes();
 			&mut new_reader,
 			&mut diff_cursor,
 			None,
+			None,
 			Some(64_000),
 			None,
 		)
@@ -333,7 +337,7 @@ Look at me. Look at me. I'm the captain now.".as_bytes();
 
 		let ofl = old_file.metadata().unwrap().len();
 		let nfl = new_file.metadata().unwrap().len();
-		diff(&mut old_file, &mut new_file, &mut diff_scratch, None, Some(ofl), Some(nfl)).expect("dif failed");
+		diff(&mut old_file, &mut new_file, &mut diff_scratch, None, None, Some(ofl), Some(nfl)).expect("dif failed");
 
 		// now apply!
 		eprintln!("applying to scratch...");

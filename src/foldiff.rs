@@ -14,6 +14,7 @@ use std::time::Duration;
 static VERSION_NUMBER: [u8; 4] = [0x24, 0x09, 0x06, 0x01]; // 2024-09-06 r1
 
 /// internal configuration struct passed into foldiff to control its operation from the cli
+#[derive(Copy, Clone, Debug)]
 pub struct FldfCfg {
 	pub threads: u32,
 	pub level_new: u8,
@@ -162,7 +163,7 @@ impl DiffingDiff {
 
 	/// handles finalising an in-memory diffing state to disk
 	/// takes mut as it also has to set blobs_new and blobs_patch
-	pub fn write_to(&mut self, writer: &mut (impl Write + Seek)) -> Result<()> {
+	pub fn write_to(&mut self, writer: &mut (impl Write + Seek), cfg: &FldfCfg) -> Result<()> {
 		writer.write_all("FLDF".as_bytes())?;
 
 		let mut serializer = Serializer::new(&mut *writer); // lol re-borrowing is goofy but sure
@@ -175,59 +176,62 @@ impl DiffingDiff {
 		// write new files
 		writer.write_all(&(self.blobs_new.len() as u64).to_be_bytes())?;
 
-		let bar = cliutils::create_bar("Compressing new files", self.blobs_new.len() as u64);
-		for path in &self.blobs_new {
-			let mut f =
-				File::open(self.new_root.join(path)).context("Failed to open file while copying newly added files")?;
+		if !self.blobs_new.is_empty() {
+			let bar = cliutils::create_bar("Compressing new files", self.blobs_new.len() as u64);
+			for path in &self.blobs_new {
+				let mut f =
+					File::open(self.new_root.join(path)).context("Failed to open file while copying newly added files")?;
 
-			//writer.write_all(&len.to_be_bytes())?;
-			writer.seek_relative(8)?; // space for len
-			
-			// TODO: level
-			let mut count = countio::Counter::new(&mut *writer);
-			let mut enc = zstd::Encoder::new(&mut count , 3)?;
-			enc.multithread(8)?;
-			
-			_ = copy(&mut f, &mut enc)?;
-			enc.finish()?;
-			
-			// write length
-			let bytes = count.writer_bytes() as u64;
-			writer.seek_relative(-(bytes as i64) - 8)?;
-			writer.write_all(&bytes.to_be_bytes())?;
-			writer.seek_relative(bytes as i64)?;
+				//writer.write_all(&len.to_be_bytes())?;
+				writer.seek_relative(8)?; // space for len
 
-			bar.inc(1);
+				let mut count = countio::Counter::new(&mut *writer);
+				let mut enc = zstd::Encoder::new(&mut count, cfg.level_new as i32)?;
+				enc.multithread(8)?;
+
+				_ = copy(&mut f, &mut enc)?;
+				enc.finish()?;
+
+				// write length
+				let bytes = count.writer_bytes() as u64;
+				writer.seek_relative(-(bytes as i64) - 8)?;
+				writer.write_all(&bytes.to_be_bytes())?;
+				writer.seek_relative(bytes as i64)?;
+
+				bar.inc(1);
+			}
+			cliutils::finish_bar(&bar);
 		}
-		cliutils::finish_bar(&bar);
 
 		// write patches
 		writer.write_all(&(self.blobs_patch.len() as u64).to_be_bytes())?;
 		//writer.write_all(&0u64.to_be_bytes())?;
-
+		
 		// perform diffing
-		let bar = cliutils::create_bar("Diffing modified files", self.blobs_patch.len() as u64);
-		for p in &self.blobs_patch {
-			let mut old = File::open(self.old_root.join(p)).context("Failed to open old file for diffing")?;
-			let mut new = File::open(self.new_root.join(p)).context("Failed to open new file for diffing")?;
+		if !self.blobs_patch.is_empty() {
+			let bar = cliutils::create_bar("Diffing changed files", self.blobs_patch.len() as u64);
+			for p in &self.blobs_patch {
+				let mut old = File::open(self.old_root.join(p)).context("Failed to open old file for diffing")?;
+				let mut new = File::open(self.new_root.join(p)).context("Failed to open new file for diffing")?;
 
-			let ol = old.metadata()?.len();
-			let nl = new.metadata()?.len();
+				let ol = old.metadata()?.len();
+				let nl = new.metadata()?.len();
 
-			zstddiff::diff(&mut old, &mut new, &mut *writer, None, Some(ol), Some(nl))
-				.context("Failed to perform diff")?;
-			bar.inc(1);
+				zstddiff::diff(&mut old, &mut new, &mut *writer, Some(cfg.level_diff), Some(cfg.threads), Some(ol), Some(nl))
+					.context("Failed to perform diff")?;
+				bar.inc(1);
+			}
+			cliutils::finish_bar(&bar);
 		}
-		cliutils::finish_bar(&bar);
 
 		Ok(())
 	}
 
-	pub fn write_to_file(&mut self, path: &Path) -> Result<()> {
+	pub fn write_to_file(&mut self, path: &Path, cfg: &FldfCfg) -> Result<()> {
 		// create file
 		let mut f = File::create_new(path).context("Failed to create file to save diff")?;
 
-		self.write_to(&mut f)
+		self.write_to(&mut f, cfg)
 	}
 
 	/// generates the on-disk manifest format from the in-memory working data
@@ -339,7 +343,7 @@ impl DiffingDiff {
 
 			bail!("All potential scan entry cases should have been handled, but this entry is slipping through the cracks:\n{entry:?}");
 		}
-		
+
 		// now, sort the list of diffs by file type
 		// :sparkles: logic deduplication :sparkles:
 		for l in [&mut patched_with_types, &mut new_with_types] {
@@ -360,7 +364,7 @@ impl DiffingDiff {
 		self.blobs_new.extend(new_with_types.into_iter().map(|p| p.0));
 
 		cliutils::finish_spinner(&spn, false);
-		
+
 		// we're done!
 		Ok(manifest)
 	}

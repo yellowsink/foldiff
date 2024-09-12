@@ -70,22 +70,22 @@ fn main() -> Result<()> {
 
 	let cli = Cli::parse();
 
-	let num_threads =
+	let threads =
 		if cli.threads == 0 {
 			fetch_logical_procs()
 		}
 		else {
 			cli.threads
 		};
-	
+
 	match &cli.command {
 		Commands::Diff { diff, new, old, level_diff, level_new } => {
 			let cfg = FldfCfg {
-				threads: num_threads,
+				threads,
 				level_new: *level_new,
 				level_diff: *level_diff
 			};
-			
+
 			let old_root: PathBuf = old.into();
 			let new_root: PathBuf = new.into();
 			// check both exist
@@ -117,17 +117,17 @@ fn main() -> Result<()> {
 			//println!("{diff_state:?}");
 
 			// emit the diff to disk
-			diff_state.write_to_file(Path::new(diff))?;
+			diff_state.write_to_file(Path::new(diff), &cfg)?;
 
 		}
 		Commands::Apply { .. } => {
 			let cfg = FldfCfg {
-				threads: num_threads,
+				threads,
 				// levels are irrelevant
 				level_new: 0,
 				level_diff: 0
 			};
-			
+
 			todo!()
 		}
 	}
