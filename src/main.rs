@@ -1,11 +1,16 @@
 use anyhow::{bail, ensure, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
+use crate::foldiff::FldfCfg;
 
 mod foldiff;
 mod zstddiff;
 mod hash;
 mod cliutils;
+
+fn fetch_logical_procs() -> u32 {
+	num_cpus::get() as u32
+}
 
 #[derive(Parser, Debug)]
 #[command(version = "2023-09-06.r1", about)]
@@ -14,8 +19,22 @@ struct Cli {
 	command: Commands,
 	/// Overwrite the output path if it exists
 	#[arg(short, long, default_value_t = false)]
-	force: bool
+	force: bool,
+	/// How many threads to use ("-T 0" = number of logical processors)
+	#[arg(short = 'T', long, default_value_t = 0)]
+	threads: u32
 }
+
+// picking the default value for -Z:
+// 7GB tar, 4C8T
+// | l# | ts  | r%   |
+// | 3  | 30  | 89.6 |
+// | 5  | 45  | 89.3 |
+// | 7  | 58  | 88.9 |
+// | 10 | 108 | 87.3 |
+// | 15 | 243 | 87.2 |
+// conclusion: -Z7
+// 3 is totally fine for -D because patching happens to work really well even with super low levels
 
 #[derive(Subcommand, Debug)]
 enum Commands {
@@ -27,6 +46,12 @@ enum Commands {
 		new: String,
 		/// Path to where to create the diff file
 		diff: String,
+		/// Zstd compression level to use for compressing new files (1 = weakest, 19 = strongest)
+		#[arg(short = 'Z', long, default_value_t = 7)]
+		level_new: u8,
+		/// Zstd compression level to use for diffing (1 = weakest, 19 = strongest)
+		#[arg(short = 'D', long, default_value_t = 3)]
+		level_diff: u8
 	},
 	/// Apply a diff to a folder
 	Apply {
@@ -45,8 +70,22 @@ fn main() -> Result<()> {
 
 	let cli = Cli::parse();
 
+	let num_threads =
+		if cli.threads == 0 {
+			fetch_logical_procs()
+		}
+		else {
+			cli.threads
+		};
+	
 	match &cli.command {
-		Commands::Diff { diff, new, old } => {
+		Commands::Diff { diff, new, old, level_diff, level_new } => {
+			let cfg = FldfCfg {
+				threads: num_threads,
+				level_new: *level_new,
+				level_diff: *level_diff
+			};
+			
 			let old_root: PathBuf = old.into();
 			let new_root: PathBuf = new.into();
 			// check both exist
@@ -82,6 +121,13 @@ fn main() -> Result<()> {
 
 		}
 		Commands::Apply { .. } => {
+			let cfg = FldfCfg {
+				threads: num_threads,
+				// levels are irrelevant
+				level_new: 0,
+				level_diff: 0
+			};
+			
 			todo!()
 		}
 	}

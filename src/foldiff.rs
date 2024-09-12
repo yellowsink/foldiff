@@ -13,6 +13,13 @@ use std::time::Duration;
 
 static VERSION_NUMBER: [u8; 4] = [0x24, 0x09, 0x06, 0x01]; // 2024-09-06 r1
 
+/// internal configuration struct passed into foldiff to control its operation from the cli
+pub struct FldfCfg {
+	pub threads: u32,
+	pub level_new: u8,
+	pub level_diff: u8,
+}
+
 // a relatively convenient and boring default type that implements Read+Write+Seek
 type DefaultReadWriteSeek = std::io::Cursor<&'static [u8]>;
 
