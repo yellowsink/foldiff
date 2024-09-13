@@ -1,11 +1,12 @@
+use crate::hash::hash_file;
+use crate::cliutils;
+use anyhow::{bail, Result};
+use indicatif::ProgressBar;
+use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
-use anyhow::{bail, Result};
-use indicatif::ProgressBar;
-use crate::cliutils;
-use crate::hash::hash_file;
 
 pub enum Mismatch {
 	TypeMismatch((PathBuf, PathBuf)), // (File, Folder)
@@ -31,16 +32,15 @@ impl Display for Mismatch {
 	}
 }
 
-/// Checks if two directories are identical
-pub fn test_equality(r1: &Path, r2: &Path) -> Result<Vec<Mismatch>> {
-	let mut mismatches = Vec::new();
+/// Checks if two directories are identical, printing results to stdout
+pub fn test_equality(r1: &Path, r2: &Path) -> Result<()> {
 	let spinner = cliutils::create_spinner("Scanning folders", true, true);
-	test_equality_internal(r1, r2, Path::new(""), &spinner, &mut mismatches)?;
+	test_equality_internal(r1, r2, Path::new(""), &spinner)?;
 	cliutils::finish_spinner(&spinner, true);
-	Ok(mismatches)
+	Ok(())
 }
 
-fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &ProgressBar, mismatches: &mut Vec<Mismatch>) -> Result<()> {
+fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &ProgressBar) -> Result<()> {
 	// stat both paths
 	let path1 = r1.join(p);
 	let path2 = r2.join(p);
@@ -59,21 +59,31 @@ fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &ProgressBar, mis
 	if type1.is_file() {
 		if type2.is_file() {
 			if hash_file(&path1)? != hash_file(&path2)? {
-				mismatches.push(Mismatch::HashMismatch(p.to_path_buf()));
+				spn.suspend(|| {
+					println!("{}", Mismatch::HashMismatch(p.to_path_buf()));
+				});
 			}
 		}
 		else {
-			mismatches.push(Mismatch::TypeMismatch((
-				Path::new(r1.file_name().unwrap()).join(p),
-				Path::new(r2.file_name().unwrap()).join(p)
-			)));
+			spn.suspend(|| {
+				println!("{}",
+							Mismatch::TypeMismatch((
+								Path::new(r1.file_name().unwrap()).join(p),
+								Path::new(r2.file_name().unwrap()).join(p)
+							))
+				);
+			});
 		}
 	}
 	else if type2.is_file() {
-		mismatches.push(Mismatch::TypeMismatch((
-			Path::new(r2.file_name().unwrap()).join(p),
-			Path::new(r1.file_name().unwrap()).join(p)
-		)));
+		spn.suspend(|| {
+			println!("{}",
+						Mismatch::TypeMismatch((
+							Path::new(r2.file_name().unwrap()).join(p),
+							Path::new(r1.file_name().unwrap()).join(p)
+						))
+			);
+		});
 	}
 	else {
 		// both are directories
@@ -84,24 +94,43 @@ fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &ProgressBar, mis
 		let set1 = BTreeSet::from_iter(files1?.iter().map(|e| e.file_name()));
 		let set2 = BTreeSet::from_iter(files2?.iter().map(|e| e.file_name()));
 		
-		// first, check for files only in set 1
-		for f in &set1 {
-			if !set2.contains(f) {
-				mismatches.push(Mismatch::OnlyIn((p.join(f), false)));
-				spn.inc(1);
-			}
-			else {
-				// we have both! recurse.
-				test_equality_internal(r1, r2, &p.join(f), spn, mismatches)?
-			}
-		}
-		// finally, check for files only in set 2
-		for f in set2 {
-			if !set1.contains(&f) {
-				mismatches.push(Mismatch::OnlyIn((p.join(f), false)));
-				spn.inc(1);
-			}
-		}
+		let mut rec_res = anyhow::Ok(());
+		// do the loops in parallel
+		rayon::scope(|s| {
+			// check for files only in set 1, and for files in both
+			s.spawn(|_| {
+				rec_res =
+					set1.par_iter()
+						.map(|f| {
+							if !set2.contains(f) {
+								spn.suspend(|| {
+									println!("{}", Mismatch::OnlyIn((p.join(f), false)));
+								});
+								spn.inc(1);
+							}
+							else {
+								// we have both! recurse.
+								test_equality_internal(r1, r2, &p.join(f), spn)?
+							}
+							Ok(())
+						})
+						.collect();
+			});
+			// check for files only in set 2
+			s.spawn(|_| {
+				set2.par_iter()
+					.for_each(|f| {
+						if !set1.contains(f) {
+							spn.suspend(|| {
+								println!("{}", Mismatch::OnlyIn((p.join(f), true)));
+							});
+							spn.inc(1);
+						}
+					});
+			});
+		});
+		
+		rec_res?;
 	}
 	
 	Ok(())

@@ -169,10 +169,7 @@ fn main() -> Result<()> {
 				todo!()
 			}
 			else {
-				let mismatches = verify::test_equality(Path::new(old), Path::new(new))?;
-				for m in mismatches {
-					println!("{m}");
-				}
+				verify::test_equality(Path::new(old), Path::new(new))?;
 			}
 		},
 	}
