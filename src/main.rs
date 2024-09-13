@@ -143,7 +143,7 @@ fn main() -> Result<()> {
 			// check existence
 			ensure!(std::fs::metadata(&old_root).context("old path must exist")?.is_dir(), "old path must be a directory");
 			ensure!(std::fs::metadata(diff).context("diff must exist")?.is_file(), "diff must be a file");
-			
+
 			// check for out folder existence and possibly delete it
 			if std::fs::exists(&new_root).context("Failed to check for output existence")? {
 				if !cli.force {
@@ -153,11 +153,11 @@ fn main() -> Result<()> {
 					if !cont { bail!("Output folder already exists"); }
 				}
 
-				std::fs::remove_dir_all(diff).context("Failed to remove folder")?;
+				std::fs::remove_dir_all(new).context("Failed to remove folder")?;
 			}
 
-			let (mut diff_state, mut f) = ApplyingDiff::read_from_file(&PathBuf::from(diff))?;
-			diff_state.apply(old_root, new_root, &mut f, &cfg)?;
+			let mut diff_state = ApplyingDiff::read_from_file(&PathBuf::from(diff))?;
+			diff_state.apply(old_root, new_root, &cfg)?;
 		},
 		Commands::Verify { .. } => todo!(),
 	}

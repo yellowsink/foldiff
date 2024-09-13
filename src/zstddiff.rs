@@ -2,7 +2,6 @@
 
 use anyhow::Result;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
-use zstd::dict::EncoderDictionary;
 use zstd::{Decoder, Encoder};
 
 // bytes

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use dialoguer::Confirm;
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::sync::LazyLock;
 use std::time::Duration;
 

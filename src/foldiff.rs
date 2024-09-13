@@ -1,17 +1,18 @@
-use crate::{handle_res_async, hash, throw_err_async};
 use crate::{cliutils, zstddiff};
+use crate::{handle_res_async, hash, throw_err_async};
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use derivative::Derivative;
 use indicatif::{MultiProgress, ProgressBar};
+use memmap2::Mmap;
+use rayon::prelude::*;
 use rmp_serde::{Deserializer, Serializer};
 use serde::{de::IgnoredAny, Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{copy, Read, Seek, SeekFrom, Write};
+use std::io::{copy, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
-use crate::utilities::ReadSeekBroker;
 
 static VERSION_NUMBER: [u8; 4] = [0x24, 0x09, 0x06, 0x01]; // 2024-09-06 r1
 
@@ -22,9 +23,6 @@ pub struct FldfCfg {
 	pub level_new: u8,
 	pub level_diff: u8,
 }
-
-// a relatively convenient and boring default type that implements Read+Write+Seek
-type DefaultReadWriteSeek = std::io::Cursor<&'static [u8]>;
 
 /// Messagepack manifest structure stored in the diff file
 #[derive(Clone, Debug, Serialize, Deserialize, Derivative)]
@@ -62,12 +60,12 @@ struct DiffingFileData {
 }
 
 /// An in-memory representation of a diff, used for the applying process
-#[derive(Clone, Debug, Default)]
-pub struct ApplyingDiff<R: Read+Seek = DefaultReadWriteSeek> {
+#[derive(Debug, Default)]
+pub struct ApplyingDiff {
 	manifest: DiffManifest,
 	blobs_new: Vec<u64>,   // offset into diff file
 	blobs_patch: Vec<u64>, // offset into diff file
-	read: R, // the diff file stream
+	read: Option<Mmap>, // the diff file map
 	old_root: PathBuf,
 	new_root: PathBuf,
 }
@@ -97,7 +95,7 @@ struct PatchedFile {
 	path: String,
 }
 
-impl DiffManifest {
+/*impl DiffManifest {
 	/// checks if this diff state contains a reference to the given path in the old folder
 	/// this does not check if the hash matches, but does return it if present
 	fn contains_file(&self, root_is_new: bool, path: &Path) -> Option<u64> {
@@ -152,7 +150,7 @@ impl DiffManifest {
 			Ok(None)
 		}
 	}
-}
+}*/
 
 impl DiffingDiff {
 	pub fn new(old_root: PathBuf, new_root: PathBuf) -> Self {
@@ -189,7 +187,10 @@ impl DiffingDiff {
 
 				let mut count = countio::Counter::new(&mut *writer);
 				let mut enc = zstd::Encoder::new(&mut count, cfg.level_new as i32)?;
-				enc.multithread(8)?;
+				enc.set_pledged_src_size(Some(f.metadata()?.len()))?;
+				enc.include_checksum(false)?;
+				enc.include_contentsize(false)?;
+				enc.multithread(cfg.threads)?;
 
 				_ = copy(&mut f, &mut enc)?;
 				enc.finish()?;
@@ -468,8 +469,7 @@ impl DiffingDiff {
 }
 
 impl ApplyingDiff {
-	/// handles initialising an in-memory applying state from disk
-	pub fn read_from(reader: &mut (impl Read + Seek)) -> Result<Self> {
+	fn read_from(reader: &mut (impl Read + Seek)) -> Result<Self> {
 		// check magic bytes
 		let mut magic = [0u8, 0, 0, 0];
 		reader
@@ -544,27 +544,35 @@ impl ApplyingDiff {
 		Ok(new_self)
 	}
 
-	pub fn read_from_file(path: &Path) -> Result<(Self, File)> {
-		let mut f = File::open(path).context("Failed to open file to read diff")?;
+	/// handles initialising an in-memory applying state from disk
+	pub fn read_from_file(path: &Path) -> Result<Self> {
+		let f = File::open(path).context("Failed to open file to read diff")?;
 
-		let res = Self::read_from(&mut f)?;
-		f.rewind()?;
-		Ok((res, f))
+		// safety: UB if the underlying diff is modified by someone else
+		// todo: is this just acceptable? do we need to lock the file (unix only) or equivalent?
+		let map = unsafe { Mmap::map(&f) }?;
+
+		let mut res = Self::read_from(&mut Cursor::new(&map))?;
+		res.read = Some(map);
+		Ok(res)
 	}
 
-	pub fn apply(&mut self, old_root: PathBuf, new_root: PathBuf, reader: &mut (impl Read+Seek+Send), cfg: &FldfCfg) -> Result<()> {
+	pub fn apply(&mut self, old_root: PathBuf, new_root: PathBuf, cfg: &FldfCfg) -> Result<()> {
 		self.old_root = old_root;
 		self.new_root = new_root;
 
-		let num_duped_files: u64 = self.manifest.duplicated_files.iter().map(|d| (d.old_paths.len() + d.new_paths.len()) as u64).sum();
+		let diff_map = &**self.read.as_ref().ok_or(anyhow!("Cannot call apply() on a state without a set `read` prop"))?;
+
+		let num_duped_files: u64 = self.manifest.duplicated_files.iter().map(|d| d.new_paths.len() as u64).sum();
 
 		// incr bar and finish if done
-		let inc = |b: &ProgressBar| {
-			b.inc(1);
+		let inc_n = |n: u64, b: &ProgressBar| {
+			b.inc(n);
 			if Some(b.position()) == b.length() {
 				cliutils::finish_bar(b);
 			}
 		};
+		let inc = |b: &ProgressBar| inc_n(1, b);
 
 		// progress reporting
 		let wrap = MultiProgress::new();
@@ -577,26 +585,29 @@ impl ApplyingDiff {
 		for b in [&spn, &bar_untouched, &bar_new, &bar_patched] {
 			b.enable_steady_tick(Duration::from_millis(50));
 		}
+		
+		// we need to create the directory to apply into
+		std::fs::create_dir_all(&self.new_root)?;
 
 		// let's spawn some threads!
-		let read_broker = ReadSeekBroker::new(reader);
 		let errs = Mutex::new(Vec::new());
 		rayon::ThreadPoolBuilder::new()
 			.num_threads(cfg.threads as usize)
 			.use_current_thread()
 			.build()?
 			.scope(|s| {
-				if self.manifest.untouched_files.is_empty() {
+				if self.manifest.untouched_files.is_empty() && self.manifest.duplicated_files.is_empty() {
 					bar_untouched.finish_and_clear();
-				} else {
+				}
+				else {
 					s.spawn(|_| {
 						// handle untouched files
 						for (h, p) in &self.manifest.untouched_files {
 							// std:;fs::copy would be faster, but we want to verify the hash
 							let mut src = handle_res_async!(errs, File::open(self.old_root.join(p)), "Failed to open file to copy from {}", p);
-							let mut dst = handle_res_async!(errs, File::open(self.new_root.join(p)), "Failed to open file to copy to {}", p);
+							let mut dst = handle_res_async!(errs, File::create(self.new_root.join(p)), "Failed to create file to copy to {}", p);
 
-							let mut hw = hash::HashWriter::new(&mut dst);
+							let mut hw = hash::HashStreamer::new(&mut dst);
 							handle_res_async!(errs, std::io::copy(&mut src, &mut hw), "Failed to copy file {}", p);
 
 							let rh = hw.finish();
@@ -605,6 +616,56 @@ impl ApplyingDiff {
 							}
 
 							inc(&bar_untouched);
+						}
+					});
+					s.spawn(|_| {
+						// handle duplicated files
+						for d in &self.manifest.duplicated_files {
+							// check all the hashes match
+							let mut checks: Vec<_> =
+								d.old_paths
+									.par_iter()
+									.filter_map(|p| {
+										let mut f = match File::open(self.old_root.join(p)).context(format!("Failed to open old file {p} to verify hash")) {
+											Ok(f) => f,
+											Err(e) => return Some(e),
+										};
+										let h = match hash::hash_stream(&mut f).context(format!("Failed to hash old file {p} to verify it")) {
+											Ok(f) => f,
+											Err(e) => return Some(e),
+										}; // shame `?` doesn't work well
+	
+										if h != d.hash {
+											Some(anyhow!("Old file {p} was not as expected."));
+										}
+										None
+									})
+									.collect();
+							
+							if !checks.is_empty() {
+								errs.lock().unwrap().extend(checks.drain(..));
+								return;
+							}
+							
+							// okay, now copy to all the new places then
+							let mut checks: Vec<_> = d.new_paths
+								.par_iter()
+								.filter_map(|p| {
+									// performs an in-kernel copy for speed
+									match std::fs::copy(self.old_root.join(&d.old_paths[0]), self.new_root.join(p)).context(format!("Failed to copy file {p}")) {
+										Ok(_bytes_copied) => {},
+										Err(e) => return Some(e),
+									};
+									None
+								})
+								.collect();
+
+							if !checks.is_empty() {
+								errs.lock().unwrap().extend(checks.drain(..));
+								return;
+							}
+							
+							inc_n(d.new_paths.len() as u64, &bar_untouched);
 						}
 					});
 				}
@@ -616,22 +677,71 @@ impl ApplyingDiff {
 						// handle new files
 						for nf in &self.manifest.new_files {
 							let blob = if let Some(t) = self.blobs_new.get(nf.index as usize) {
-									*t
+									*t as usize
 								}
 								else {
 									throw_err_async!(errs, anyhow!("new file {} had an out-of-range index pointing to its data", nf.path));
 								};
-							
+
 							// create new file
 							let mut dest = handle_res_async!(errs, File::create(self.new_root.join(&nf.path)), "Failed to create {} to write new file", &nf.path);
-							
-							
-							// get blob ready
-							let mut read = read_broker.create_reader();
-							handle_res_async!(errs, read.seek(SeekFrom::Start(blob)), "Failed to seek diff to read new file data");
-							
+							let mut wrt = hash::HashStreamer::new(&mut dest);
+
 							// copy and decompress
-							
+							let mut read = Cursor::new(&diff_map[blob..]);
+
+							handle_res_async!(errs, zstd::stream::copy_decode(&mut read, &mut wrt), "Failed to decompress file {}", &nf.path);
+
+							let rh = wrt.finish();
+							if rh != nf.hash {
+								throw_err_async!(errs, anyhow!("Written {} was different to expected (hash was {rh}, not {})", nf.path, nf.hash));
+							}
+
+							inc(&bar_new);
+						}
+					});
+				}
+				if self.manifest.patched_files.is_empty() {
+					bar_patched.finish_and_clear();
+				}
+				else {
+					s.spawn(|_| {
+						// handle patched files
+						for pf in &self.manifest.patched_files {
+							let mut src = handle_res_async!(errs, File::open(self.old_root.join(&pf.path)), "Failed to open file to patch from {}", pf.path);
+							let mut dst = handle_res_async!(errs, File::create(self.new_root.join(&pf.path)), "Failed to create file to patch to {}", pf.path);
+
+							// get length of src
+							let src_len = handle_res_async!(errs, src.metadata(), "Couldn't get length of patch source file {}", pf.path).len();
+
+							let mut src = hash::HashStreamer::new(&mut src);
+							let mut dst = hash::HashStreamer::new(&mut dst);
+
+							let blob = if let Some(t) = self.blobs_patch.get(pf.index as usize) {
+								*t as usize
+							}
+							else {
+								throw_err_async!(errs, anyhow!("patched file {} had an out-of-range index pointing to its data", pf.path));
+							};
+
+							// get diff blob ready
+							let mut diff = Cursor::new(&diff_map[blob..]);
+
+							// apply!
+							handle_res_async!(errs,
+								zstddiff::apply(&mut src, &mut diff, &mut dst, Some(src_len)),
+								"Failed to apply diff for {}", pf.path);
+
+							let src_rh = src.finish();
+							let dst_rh = dst.finish();
+							if src_rh != pf.old_hash {
+								throw_err_async!(errs, anyhow!("Source {} was different to expected (hash was {src_rh}, not {})", pf.path, pf.old_hash));
+							}
+							if dst_rh != pf.new_hash {
+								throw_err_async!(errs, anyhow!("Written {} was different to expected (hash was {dst_rh}, not {})", pf.path, pf.new_hash));
+							}
+
+							inc(&bar_patched);
 						}
 					});
 				}
