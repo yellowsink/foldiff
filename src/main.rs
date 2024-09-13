@@ -1,7 +1,8 @@
+use std::fs::File;
 use anyhow::{bail, ensure, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
-use crate::foldiff::{ApplyingDiff, DiffingDiff, FldfCfg};
+use crate::foldiff::{ApplyingDiff, DiffManifest, DiffingDiff, FldfCfg};
 
 mod foldiff;
 mod zstddiff;
@@ -165,8 +166,10 @@ fn main() -> Result<()> {
 			diff_state.apply(old_root, new_root, &cfg)?;
 		},
 		Commands::Verify { new, old, diff } => {
-			if let Some(_diff) = diff {
-				todo!()
+			if let Some(diff) = diff {
+				let f = File::open(diff).context("Failed to open diff file to verify with")?;
+				let manifest = DiffManifest::read_from(f).context("Failed to read diff file to verify with")?;
+				verify::verify(Path::new(old), Path::new(new), &manifest)?;
 			}
 			else {
 				verify::test_equality(Path::new(old), Path::new(new))?;

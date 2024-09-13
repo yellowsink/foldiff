@@ -31,11 +31,11 @@ pub struct FldfCfg {
 pub struct DiffManifest {
 	#[derivative(Default(value="VERSION_NUMBER"))] // this really should be in std
 	version: [u8; 4],
-	untouched_files: Vec<HashAndPath>,
-	deleted_files: Vec<HashAndPath>,
-	new_files: Vec<NewFile>,
-	duplicated_files: Vec<DuplicatedFile>,
-	patched_files: Vec<PatchedFile>,
+	pub untouched_files: Vec<HashAndPath>,
+	pub deleted_files: Vec<HashAndPath>,
+	pub new_files: Vec<NewFile>,
+	pub duplicated_files: Vec<DuplicatedFile>,
+	pub patched_files: Vec<PatchedFile>,
 }
 
 /// An in-memory representation of a diff, used for the diff creation process
@@ -97,62 +97,35 @@ struct PatchedFile {
 	path: String,
 }
 
-/*impl DiffManifest {
-	/// checks if this diff state contains a reference to the given path in the old folder
-	/// this does not check if the hash matches, but does return it if present
-	fn contains_file(&self, root_is_new: bool, path: &Path) -> Option<u64> {
-		if !root_is_new {
-			for (h, p) in &self.deleted_files {
-				if Path::new(p) == path {
-					return Some(*h);
-				}
-			}
-		}
+impl DiffManifest {
+	pub fn read_from(mut reader: impl Read) -> Result<Self> {
+		// check magic bytes
+		let mut magic = [0u8, 0, 0, 0];
+		reader
+			.read_exact(&mut magic)
+			.context("Failed to read while creating diff format")?;
+		ensure!(
+			magic == "FLDF".as_bytes(),
+			"Magic bytes did not match expectation ({magic:x?} instead of 'FLDF')"
+		);
 
-		for (h, p) in &self.untouched_files {
-			if Path::new(p) == path {
-				return Some(*h);
-			}
-		}
+		// deserialize msgpack data
+		// this better understand when to stop reading lol
+		let mut deserializer = Deserializer::new(reader);
+		let manifest =
+			DiffManifest::deserialize(&mut deserializer).context("Failed to deserialize diff format")?;
+		drop(deserializer); // this drops here anyway, but is load-bearing, so make it explicit
 
-		if root_is_new {
-			for nf in &self.new_files {
-				if Path::new(&nf.path) == path {
-					return Some(nf.hash);
-				}
-			}
-		}
+		// check version
+		ensure!(
+			manifest.version == VERSION_NUMBER,
+			"Did not recognise version number {:x?}",
+			manifest.version
+		);
 
-		for dup in &self.duplicated_files {
-			let paths = if root_is_new { &dup.new_paths } else { &dup.old_paths };
-
-			if paths.iter().any(|p| Path::new(p) == path) {
-				return Some(dup.hash);
-			}
-		}
-
-		for pat in &self.patched_files {
-			if Path::new(&pat.path) == path {
-				return Some(if root_is_new { pat.new_hash } else { pat.old_hash });
-			}
-		}
-
-		None
+		Ok(manifest)
 	}
-
-	/// checks if the given path is present in the diff and verifies that it matches the expected hash
-	/// if this returns false, the directory structure on disk does not match that dictated by the state
-	fn verify_contains(&self, root_is_new: bool, path: &Path, root: &Path) -> Result<Option<bool>> {
-		if let Some(hash) = self.contains_file(root_is_new, path) {
-			let hash_actual = hash::hash_file(&root.join(path))?;
-
-			Ok(Some(hash == hash_actual))
-		}
-		else {
-			Ok(None)
-		}
-	}
-}*/
+}
 
 impl DiffingDiff {
 	pub fn new(old_root: PathBuf, new_root: PathBuf) -> Self {
@@ -487,29 +460,8 @@ impl DiffingDiff {
 
 impl ApplyingDiff {
 	fn read_from(reader: &mut (impl Read + Seek)) -> Result<Self> {
-		// check magic bytes
-		let mut magic = [0u8, 0, 0, 0];
-		reader
-			.read_exact(&mut magic)
-			.context("Failed to read while creating diff format")?;
-		ensure!(
-			magic == "FLDF".as_bytes(),
-			"Magic bytes did not match expectation ({magic:x?} instead of 'FLDF')"
-		);
-
-		// deserialize msgpack data
-		// this better understand when to stop reading lol
-		let mut deserializer = Deserializer::new(&mut *reader);
-		let manifest =
-			DiffManifest::deserialize(&mut deserializer).context("Failed to deserialize diff format")?;
-		drop(deserializer); // this drops here anyway, but is load-bearing, so make it explicit
-
-		// check version
-		ensure!(
-			manifest.version == VERSION_NUMBER,
-			"Did not recognise version number {:x?}",
-			manifest.version
-		);
+		// checks magic bytes and version too
+		let manifest = DiffManifest::read_from(&mut *reader)?;
 
 		// create self
 		let mut new_self = Self::default();

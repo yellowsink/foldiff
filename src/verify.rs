@@ -1,10 +1,10 @@
+use crate::foldiff::DiffManifest;
 use crate::hash::hash_file;
 use crate::cliutils;
 use anyhow::{bail, Result};
 use indicatif::ProgressBar;
 use rayon::prelude::*;
 use std::collections::BTreeSet;
-use std::fmt::Display;
 use std::fs;
 use std::path::Path;
 
@@ -104,6 +104,57 @@ fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &ProgressBar) -> 
 		
 		rec_res?;
 	}
+	
+	Ok(())
+}
+
+/// Checks if two directories match the given manifest, printing results to stdout
+pub fn verify(r1: &Path, r2: &Path, manifest: &DiffManifest) -> Result<()> {
+	let spn = cliutils::create_spinner("Verifying files", true, true);
+	
+	let report_hash_err = |p: &Path| {
+		spn.suspend(|| {
+			println!("{p:?} is not as expected");
+		});
+	};
+	
+	rayon::scope(|_| {
+		manifest.untouched_files
+			.par_iter()
+			.for_each(|(h, p)| {
+				// TODO: handle this error
+				_ = rayon::join(
+					// old dir
+					|| {
+						let p = r1.join(p);
+						if hash_file(&p)? != *h {
+							report_hash_err(&p);
+						}
+						anyhow::Ok(())
+					},
+					// new dir
+					|| {
+						let p = r2.join(p);
+						if hash_file(&p)? != *h {
+							report_hash_err(&p);
+						}
+						anyhow::Ok(())
+					}
+				);
+			});
+		
+		manifest.deleted_files
+			.par_iter()
+			.for_each(|(h, p)| {
+				let p = r1.join(p);
+				// TODO: handle this error
+				if hash_file(&p).unwrap() != *h {
+					report_hash_err(&p);
+				}
+			});
+		
+		todo!() // finish this stuff lol
+	});
 	
 	Ok(())
 }
