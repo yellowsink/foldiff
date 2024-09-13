@@ -99,10 +99,13 @@ all numbers are stored in big-endian, because it is the correct choice :)
 ## Progress
 
 - [x] Diffing
- * [x] Working diff generator
- * [x] Does not keep blobs in memory
- * [ ] Multi-threaded
-- [ ] Applying
- * [ ] Working application
- * [x] Does not keep blobs in memory
- * [ ] Multi-threaded
+  * [x] Working diff generator
+  * [x] Does not keep blobs in memory
+  * [-] Multi-threaded (zstd is multithreaded but scanning, diffing, and compression are not)
+- [x] Applying
+  * [x] Working application
+  * [x] Does not keep blobs in memory
+  * [x] Multi-threaded
+- [ ] Verifying
+  * [ ] Folder equality
+  * [ ] Diff hash checking
