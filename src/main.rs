@@ -8,6 +8,7 @@ mod zstddiff;
 mod hash;
 mod cliutils;
 mod utilities;
+mod verify;
 
 fn fetch_logical_procs() -> u32 {
 	num_cpus::get() as u32
@@ -88,6 +89,10 @@ fn main() -> Result<()> {
 			cli.threads
 		};
 
+	rayon::ThreadPoolBuilder::new()
+		.num_threads(threads as usize)
+		.build_global()?;
+
 	match &cli.command {
 		Commands::Diff { diff, new, old, level_diff, level_new } => {
 			let cfg = FldfCfg {
@@ -159,7 +164,17 @@ fn main() -> Result<()> {
 			let mut diff_state = ApplyingDiff::read_from_file(&PathBuf::from(diff))?;
 			diff_state.apply(old_root, new_root, &cfg)?;
 		},
-		Commands::Verify { .. } => todo!(),
+		Commands::Verify { new, old, diff } => {
+			if let Some(_diff) = diff {
+				todo!()
+			}
+			else {
+				let mismatches = verify::test_equality(Path::new(old), Path::new(new))?;
+				for m in mismatches {
+					println!("{m}");
+				}
+			}
+		},
 	}
 
 	Ok(())
