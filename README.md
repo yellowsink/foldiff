@@ -65,22 +65,22 @@ all numbers are stored in big-endian, because it is the correct choice :)
   - version number, [u8, u8, u8, 'r'|'b'|'a'], 0.1.0-b
   - untouched files (list of following:)
     * path
-    * [XXH3](https://xxhash.com/) hash
+    * [XXH64](https://xxhash.com/) hash
   - delete files (list of following:)
-    * XXH3 hash
+    * XXH64 hash
     * path in old folder
   - new files (list of following:)
     * new XXH3 hash
     * u64 index into new array
     * path
   - duplicated files (list of following:)
-    * XXH3 hash
+    * XXH64 hash
     * u64 index into new array, u64::MAX if not necessary
     * list of paths in old folder
     * list of paths in new folder
   - patch files (list of following:)
-    * old XXH3 hash
-    * new XXH3 hash
+    * old XXH64 hash
+    * new XXH64 hash
     * u64 index into patch array
     * path
 - new files:

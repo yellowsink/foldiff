@@ -2,7 +2,7 @@ use std::fs::File;
 use std::hash::Hasher;
 use std::io::{Read, Write};
 use std::path::Path;
-use twox_hash::{XxHash64, Xxh3Hash64};
+use twox_hash::XxHash64;
 
 #[derive(Clone, Default)]
 pub struct XXHasher(XxHash64);
@@ -84,27 +84,27 @@ mod tests {
 		// create tmp file
 		let mut f = tempfile().unwrap();
 		let mut hs = XXHashStreamer::new(&mut f);
-		
+
 		// write random stuff to it
 		for _ in 0..1_000 {
 			let buf = [0u8; 64];
 			hs.write_all(&buf).unwrap();
 		}
-		
+
 		let hash_hs_write = hs.finish();
-		
+
 		f.rewind().unwrap();
-		
+
 		let mut hs = XXHashStreamer::new(&mut f);
-		// read it all 
+		// read it all
 		std::io::copy(&mut hs, &mut std::io::sink()).unwrap();
 
 		let hash_hs_read = hs.finish();
-		
+
 		f.rewind().unwrap();
-		
+
 		let hash_real = hash_stream(&mut f).unwrap();
-		
+
 		assert_eq!(hash_real, hash_hs_write);
 		assert_eq!(hash_real, hash_hs_read);
 	}

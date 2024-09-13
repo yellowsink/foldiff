@@ -1,5 +1,6 @@
-use crate::{cliutils, zstddiff};
-use crate::{handle_res_async, hash, throw_err_async};
+use crate::utilities::create_file;
+use crate::{cliutils, handle_res_parit, zstddiff};
+use crate::hash;
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use derivative::Derivative;
 use indicatif::{MultiProgress, ProgressBar};
@@ -13,7 +14,6 @@ use std::io::{copy, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
-use crate::utilities::create_file;
 
 static VERSION_NUMBER: [u8; 4] = [0, 1, 0, b'b']; // v0.1.0-b
 
@@ -403,7 +403,7 @@ impl DiffingDiff {
 		// first, hash it
 		let resolved_path = root.join(path);
 		let hash = hash::hash_file(&resolved_path)?;
-		
+
 		// get working state
 		if let Some(state) = self.files.get_mut(&hash) {
 			// add our path
@@ -625,38 +625,45 @@ impl ApplyingDiff {
 				else {
 					s.spawn(|_| {
 						// handle untouched files
-						for (h, p) in &self.manifest.untouched_files {
-							// std::fs::copy would be faster, but we want to verify the hash
-							let mut src = handle_res_async!(errs, File::open(self.old_root.join(p)), "Failed to open file to copy from {}", p);
-							let mut dst = handle_res_async!(errs, create_file(&self.new_root.join(p)), "Failed to create file to copy to {}", p);
+						// use a parallel iterator so we can use as MANY threads as possible,
+						// or for if the other tasks are all done first.
+						let mut checks: Vec<_> =
+							self.manifest.untouched_files
+								.par_iter()
+								.filter_map(|(h, p)| {
+									// std::fs::copy would be faster, but we want to verify the hash
+									let mut src = handle_res_parit!(File::open(self.old_root.join(p)), "Failed to open file to copy from {}", p);
+									let mut dst = handle_res_parit!(create_file(&self.new_root.join(p)), "Failed to create file to copy to {}", p);
 
-							let mut hw = hash::XXHashStreamer::new(&mut dst);
-							handle_res_async!(errs, std::io::copy(&mut src, &mut hw), "Failed to copy file {}", p);
+									let mut hw = hash::XXHashStreamer::new(&mut dst);
+									handle_res_parit!(std::io::copy(&mut src, &mut hw), "Failed to copy file {}", p);
 
-							let rh = hw.finish();
-							if rh != *h {
-								throw_err_async!(errs, anyhow!("Found {p} was different to expected (hash was {rh}, not {})", *h));
-							}
+									let rh = hw.finish();
+									if rh != *h {
+										return Some(anyhow!("Found {p} was different to expected (hash was {rh}, not {})", *h));
+									}
 
-							inc(&bar_untouched);
+									inc(&bar_untouched);
+									None
+								})
+								.collect();
+
+						if !checks.is_empty() {
+							errs.lock().unwrap().extend(checks.drain(..));
 						}
 					});
 					s.spawn(|_| {
 						// handle duplicated files
+						// could be further parallelized by turning this loop into a par_iter,
+						// but seems unnecessary to me due to this already being pretty parallelized.
 						for d in &self.manifest.duplicated_files {
 							// check all the hashes match
 							let mut checks: Vec<_> =
 								d.old_paths
 									.par_iter()
 									.filter_map(|p| {
-										let mut f = match File::open(self.old_root.join(p)).context(format!("Failed to open old file {p} to verify hash")) {
-											Ok(f) => f,
-											Err(e) => return Some(e),
-										};
-										let h = match hash::hash_stream(&mut f).context(format!("Failed to hash old file {p} to verify it")) {
-											Ok(f) => f,
-											Err(e) => return Some(e),
-										}; // shame `?` doesn't work well
+										let mut f = handle_res_parit!(File::open(self.old_root.join(p)), "Failed to open old file {p} to verify hash");
+										let h = handle_res_parit!(hash::hash_stream(&mut f), "Failed to hash old file {p} to verify it");
 
 										if h != d.hash {
 											Some(anyhow!("Old file {p} was not as expected."));
@@ -679,15 +686,10 @@ impl ApplyingDiff {
 										// ensure we have a parent directory
 										let dest_path = self.new_root.join(p);
 										if let Some(par) = dest_path.parent() {
-											if let Err(e) = std::fs::create_dir_all(par).context(format!("Failed to create parent dir to copy file {p}")) {
-												return Some(e);
-											}
+											handle_res_parit!(std::fs::create_dir_all(par), "Failed to create parent dir to copy file {p}");
 										}
 
-										match std::fs::copy(self.old_root.join(&d.old_paths[0]), dest_path).context(format!("Failed to copy file {p}")) {
-											Ok(_bytes_copied) => {}
-											Err(e) => return Some(e),
-										};
+										handle_res_parit!(std::fs::copy(self.old_root.join(&d.old_paths[0]), dest_path), "Failed to copy file {p}");
 									}
 									else {
 										// we need to copy out of ourself
@@ -704,16 +706,10 @@ impl ApplyingDiff {
 
 										// copy
 										let mut read = Cursor::new(&diff_map[blob..(blob + len)]);
-										let f = match create_file(&self.new_root.join(p)).context(format!("Failed to create new file {p} to write to")) {
-											Ok(f) => f,
-											Err(e) => return Some(e),
-										};
+										let f = handle_res_parit!(create_file(&self.new_root.join(p)), "Failed to create new file {p} to write to");
 										let mut writer = hash::XXHashStreamer::new(f);
 
-										match std::io::copy(&mut read, &mut writer) {
-											Ok(_bytes_copied) => {},
-											Err(e) => return Some(anyhow::Error::from(e)),
-										};
+										handle_res_parit!(std::io::copy(&mut read, &mut writer));
 
 										// check hash
 										let rh = writer.finish();
@@ -740,33 +736,43 @@ impl ApplyingDiff {
 				else {
 					s.spawn(|_| {
 						// handle new files
-						for nf in &self.manifest.new_files {
-							let blob = if let Some(t) = self.blobs_new.get(nf.index as usize) {
+						let mut checks: Vec<_> = self.manifest.new_files
+							.par_iter()
+							.filter_map(|nf| {
+								let blob = if let Some(t) = self.blobs_new.get(nf.index as usize) {
 									*t as usize
 								}
 								else {
-									throw_err_async!(errs, anyhow!("new file {} had an out-of-range index pointing to its data", nf.path));
+									return Some(anyhow!("new file {} had an out-of-range index pointing to its data", nf.path));
 								};
 
-							// create new file
-							let mut dest = handle_res_async!(errs, create_file(&self.new_root.join(&nf.path)), "Failed to create {} to write new file", &nf.path);
-							let mut wrt = hash::XXHashStreamer::new(&mut dest);
+								// create new file
+								let mut dest = handle_res_parit!(create_file(&self.new_root.join(&nf.path)), "Failed to create {} to write new file", &nf.path);
+								let mut wrt = hash::XXHashStreamer::new(&mut dest);
 
-							// read length
-							let len = u64::from_be_bytes(*diff_map[blob..].first_chunk().unwrap()) as usize;
-							let blob = blob + 8; // advance past length
+								// read length
+								let len = u64::from_be_bytes(*diff_map[blob..].first_chunk().unwrap()) as usize;
+								let blob = blob + 8; // advance past length
 
-							// copy and decompress
-							let mut read = Cursor::new(&diff_map[blob..(blob + len)]);
+								// copy and decompress
+								let mut read = Cursor::new(&diff_map[blob..(blob + len)]);
 
-							handle_res_async!(errs, zstd::stream::copy_decode(&mut read, &mut wrt), "Failed to decompress file {}", &nf.path);
+								handle_res_parit!(zstd::stream::copy_decode(&mut read, &mut wrt), "Failed to decompress file {}", &nf.path);
 
-							let rh = wrt.finish();
-							if rh != nf.hash {
-								throw_err_async!(errs, anyhow!("Written {} was different to expected (hash was {rh}, not {})", nf.path, nf.hash));
-							}
+								let rh = wrt.finish();
+								if rh != nf.hash {
+									return Some(anyhow!("Written {} was different to expected (hash was {rh}, not {})", nf.path, nf.hash));
+								}
 
-							inc(&bar_new);
+								inc(&bar_new);
+
+								None
+							})
+							.collect();
+
+						if !checks.is_empty() {
+							errs.lock().unwrap().extend(checks.drain(..));
+							return;
 						}
 					});
 				}
@@ -776,43 +782,49 @@ impl ApplyingDiff {
 				else {
 					s.spawn(|_| {
 						// handle patched files
-						for pf in &self.manifest.patched_files {
-							let mut src = handle_res_async!(errs, File::open(self.old_root.join(&pf.path)), "Failed to open file to patch from {}", pf.path);
-							let mut dst = handle_res_async!(errs, create_file(&self.new_root.join(&pf.path)), "Failed to create file to patch to {}", pf.path);
+						let mut checks: Vec<_> =
+							self.manifest.patched_files
+								.par_iter()
+								.filter_map(|pf| {
+									let mut src = handle_res_parit!(File::open(self.old_root.join(&pf.path)), "Failed to open file to patch from {}", pf.path);
+									let mut dst = handle_res_parit!(create_file(&self.new_root.join(&pf.path)), "Failed to create file to patch to {}", pf.path);
 
-							// get length of src
-							let src_len = handle_res_async!(errs, src.metadata(), "Couldn't get length of patch source file {}", pf.path).len();
+									// get length of src
+									let src_len = handle_res_parit!(src.metadata(), "Couldn't get length of patch source file {}", pf.path).len();
 
-							let mut src = hash::XXHashStreamer::new(&mut src);
-							let mut dst = hash::XXHashStreamer::new(&mut dst);
+									let mut src = hash::XXHashStreamer::new(&mut src);
+									let mut dst = hash::XXHashStreamer::new(&mut dst);
 
-							let blob = if let Some(t) = self.blobs_patch.get(pf.index as usize) {
-								*t as usize
-							}
-							else {
-								throw_err_async!(errs, anyhow!("patched file {} had an out-of-range index pointing to its data", pf.path));
-							};
+									let blob = if let Some(t) = self.blobs_patch.get(pf.index as usize) {
+										*t as usize
+									}
+									else {
+										return Some(anyhow!("patched file {} had an out-of-range index pointing to its data", pf.path));
+									};
 
-							// get diff blob ready
-							let mut diff = Cursor::new(&diff_map[blob..]);
+									// get diff blob ready
+									let mut diff = Cursor::new(&diff_map[blob..]);
 
-							// we can't use HashStreamer here due to it seeking around, and while I could make a memory buffered thing:tm:
+									// apply!
+									handle_res_parit!(zstddiff::apply(&mut src, &mut diff, &mut dst, src_len), "Failed to apply diff for {}", pf.path);
 
-							// apply!
-							handle_res_async!(errs,
-								zstddiff::apply(&mut src, &mut diff, &mut dst, src_len),
-								"Failed to apply diff for {}", pf.path);
+									let src_rh = src.finish();
+									let dst_rh = dst.finish();
+									if src_rh != pf.old_hash {
+										return Some(anyhow!("Source {} was different to expected (hash was {src_rh}, not {})", pf.path, pf.old_hash));
+									}
+									if dst_rh != pf.new_hash {
+										return Some(anyhow!("Written {} was different to expected (hash was {dst_rh}, not {})", pf.path, pf.new_hash));
+									}
 
-							let src_rh = src.finish();
-							let dst_rh = dst.finish();
-							if src_rh != pf.old_hash {
-								throw_err_async!(errs, anyhow!("Source {} was different to expected (hash was {src_rh}, not {})", pf.path, pf.old_hash));
-							}
-							if dst_rh != pf.new_hash {
-								throw_err_async!(errs, anyhow!("Written {} was different to expected (hash was {dst_rh}, not {})", pf.path, pf.new_hash));
-							}
+									inc(&bar_patched);
 
-							inc(&bar_patched);
+									None
+								})
+								.collect();
+
+						if !checks.is_empty() {
+							errs.lock().unwrap().extend(checks.drain(..));
 						}
 					});
 				}
