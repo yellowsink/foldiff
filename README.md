@@ -62,7 +62,7 @@ all numbers are stored in big-endian, because it is the correct choice :)
 
 - magic bytes, ASCII 'FLDF'
 - A messagepack object
-  - version number, `0x24 09 06 01`
+  - version number, [u8, u8, u8, 'r'|'b'|'a'], 0.1.0-b
   - untouched files (list of following:)
     * path
     * [XXH3](https://xxhash.com/) hash

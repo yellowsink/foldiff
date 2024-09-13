@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-static VERSION_NUMBER: [u8; 4] = [0x24, 0x09, 0x06, 0x01]; // 2024-09-06 r1
+static VERSION_NUMBER: [u8; 4] = [0, 1, 0, b'b']; // v0.1.0-b
 
 /// internal configuration struct passed into foldiff to control its operation from the cli
 #[derive(Copy, Clone, Debug)]
@@ -166,7 +166,9 @@ impl DiffingDiff {
 	pub fn write_to(&mut self, writer: &mut (impl Write + Seek), cfg: &FldfCfg) -> Result<()> {
 		writer.write_all("FLDF".as_bytes())?;
 
-		let mut serializer = Serializer::new(&mut *writer); // lol re-borrowing is goofy but sure
+		// with_struct_map makes it write compliant messagepack, but all that repetition is kinda euuugh
+		// emitting structs as tuples is wayyyy more compact
+		let mut serializer = Serializer::new(&mut *writer);//.with_struct_map(); // lol re-borrowing is goofy but sure
 		self
 			.generate_manifest()?
 			.serialize(&mut serializer)
@@ -515,8 +517,6 @@ impl ApplyingDiff {
 				.context("Failed to read new file length")?;
 			let len = u64::from_be_bytes(len);
 
-			// keep track of the offset
-			new_self.blobs_new.push(reader.stream_position()?);
 			// jump to next file
 			reader
 				.seek_relative(len.try_into()?)
@@ -585,7 +585,7 @@ impl ApplyingDiff {
 		for b in [&spn, &bar_untouched, &bar_new, &bar_patched] {
 			b.enable_steady_tick(Duration::from_millis(50));
 		}
-		
+
 		// we need to create the directory to apply into
 		std::fs::create_dir_all(&self.new_root)?;
 
@@ -634,19 +634,19 @@ impl ApplyingDiff {
 											Ok(f) => f,
 											Err(e) => return Some(e),
 										}; // shame `?` doesn't work well
-	
+
 										if h != d.hash {
 											Some(anyhow!("Old file {p} was not as expected."));
 										}
 										None
 									})
 									.collect();
-							
+
 							if !checks.is_empty() {
 								errs.lock().unwrap().extend(checks.drain(..));
 								return;
 							}
-							
+
 							// okay, now copy to all the new places then
 							let mut checks: Vec<_> = d.new_paths
 								.par_iter()
@@ -664,7 +664,7 @@ impl ApplyingDiff {
 								errs.lock().unwrap().extend(checks.drain(..));
 								return;
 							}
-							
+
 							inc_n(d.new_paths.len() as u64, &bar_untouched);
 						}
 					});
@@ -687,8 +687,12 @@ impl ApplyingDiff {
 							let mut dest = handle_res_async!(errs, File::create(self.new_root.join(&nf.path)), "Failed to create {} to write new file", &nf.path);
 							let mut wrt = hash::HashStreamer::new(&mut dest);
 
+							// read length
+							let len = u64::from_be_bytes(*diff_map[blob..].first_chunk().unwrap()) as usize;
+							let blob = blob + 8; // advance past length
+							
 							// copy and decompress
-							let mut read = Cursor::new(&diff_map[blob..]);
+							let mut read = Cursor::new(&diff_map[blob..(blob + len)]);
 
 							handle_res_async!(errs, zstd::stream::copy_decode(&mut read, &mut wrt), "Failed to decompress file {}", &nf.path);
 
