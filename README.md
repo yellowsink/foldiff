@@ -75,6 +75,7 @@ all numbers are stored in big-endian, because it is the correct choice :)
     * path
   - duplicated files (list of following:)
     * XXH3 hash
+    * u64 index into new array, u64::MAX if not necessary
     * list of paths in old folder
     * list of paths in new folder
   - patch files (list of following:)

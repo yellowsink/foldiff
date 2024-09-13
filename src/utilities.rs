@@ -1,5 +1,8 @@
 // threading error handling utils used in ApplyingDiff::apply()
 
+use std::fs::File;
+use std::path::Path;
+
 /// Adds err to errs and returns
 #[macro_export]
 macro_rules! throw_err_async {
@@ -23,4 +26,12 @@ macro_rules! handle_res_async {
 			v.unwrap()
 		}
 	}};
+}
+
+/// creates a file and all necessary parent directories
+pub fn create_file(p: &Path) -> std::io::Result<File> {
+	if let Some(p) = p.parent() {
+		std::fs::create_dir_all(p)?;
+	}
+	File::create(p)
 }

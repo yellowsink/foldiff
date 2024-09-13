@@ -270,6 +270,7 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_bytes",
+ "tempfile",
  "twox-hash",
  "zstd",
 ]

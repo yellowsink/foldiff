@@ -129,13 +129,11 @@ pub fn diff(
 /// `old_len_hint` should either not be provided, or MUST be EXACTLY the size of the old stream, allowing eliding length determination.
 /// The number of bytes written to the new file is returned.
 pub fn apply(
-	old: &mut (impl Read + Seek),
+	old: &mut impl Read,
 	diff: &mut (impl Read + Seek),
 	dest: &mut impl Write,
-	old_len_hint: Option<u64>,
+	old_len: u64,
 ) -> Result<u64> {
-	let old_len = resolve_len(old, old_len_hint)?;
-
 	// read number of chunks
 	let num_chunks = read_u64(diff)?;
 
@@ -148,7 +146,8 @@ pub fn apply(
 
 		// read dictionary into memory
 		let mut dict_chunk = vec![0u8; (co2 - co1) as usize].into_boxed_slice();
-		old.seek(SeekFrom::Start(co1))?;
+		//debug_assert_eq!(old.stream_position()?, co1);
+		//old.seek(SeekFrom::Start(co1))?;
 		old.read_exact(&mut dict_chunk)?;
 
 		// read length of compressed blob & setup streams
@@ -176,6 +175,7 @@ mod tests {
 	use rand::{random, RngCore};
 	use std::fs::{remove_file, File};
 	use std::io::{BufReader, BufWriter, Read, Seek, Write};
+	use zstd::dict::EncoderDictionary;
 
 	// zstd is entirely ignoring my dictionary so fuck it, let's just test that dictionaries work
 	// *at all* with this setup i guess
@@ -251,7 +251,8 @@ Look at me. Look at me. I'm the captain now.".as_bytes();
 		old_reader.rewind().unwrap();
 		diff_cursor.rewind().unwrap();
 
-		let dcsz = apply(&mut old_reader, &mut diff_cursor, &mut final_writer, None).unwrap();
+		let ol = resolve_len(&mut old_reader, None).unwrap();
+		let dcsz = apply(&mut old_reader, &mut diff_cursor, &mut final_writer, ol).unwrap();
 
 		// check if everything is ok
 		assert_eq!(dcsz, 128_000);
@@ -348,7 +349,8 @@ Look at me. Look at me. I'm the captain now.".as_bytes();
 		}
 		let mut fin_scratch = File::create_new(".unittest_fin_scratch").unwrap();
 
-		apply(&mut old_file, &mut diff_scratch, &mut fin_scratch, None).expect("apply failed");
+		let ol = resolve_len(&mut old_file, None).unwrap();
+		apply(&mut old_file, &mut diff_scratch, &mut fin_scratch, ol).expect("apply failed");
 
 		// now check equality
 		fin_scratch.rewind().unwrap();

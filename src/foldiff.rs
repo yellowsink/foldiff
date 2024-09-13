@@ -6,13 +6,14 @@ use indicatif::{MultiProgress, ProgressBar};
 use memmap2::Mmap;
 use rayon::prelude::*;
 use rmp_serde::{Deserializer, Serializer};
-use serde::{de::IgnoredAny, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{copy, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
+use crate::utilities::create_file;
 
 static VERSION_NUMBER: [u8; 4] = [0, 1, 0, b'b']; // v0.1.0-b
 
@@ -83,6 +84,7 @@ struct NewFile {
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 struct DuplicatedFile {
 	hash: u64,
+	idx: u64, // u64::MAX == none
 	old_paths: Vec<String>,
 	new_paths: Vec<String>,
 }
@@ -289,9 +291,21 @@ impl DiffingDiff {
 					new_paths_utf.push(path_to_string(p)?);
 				}
 
+				// are we *also* a new file?
+				let idx =
+					if entry.paths_old.is_empty() {
+						let i = new_with_types.len() as u64;
+						new_with_types.push((entry.paths_new[0].clone(), entry.inferred_mime));
+						i
+					}
+					else {
+						u64::MAX
+					};
+
 				manifest.duplicated_files.push(DuplicatedFile {
 					old_paths: old_paths_utf,
 					new_paths: new_paths_utf,
+					idx,
 					hash: *hash
 				});
 				continue;
@@ -302,10 +316,10 @@ impl DiffingDiff {
 				debug_assert_eq!(entry.paths_new.len(), 1);
 				// do we need to diff?
 				let path = &entry.paths_new[0];
-				if let Some(new_hash) = self.file_paths_old.get(path) {
+				if let Some(old_hash) = self.file_paths_old.get(path) {
 					manifest.patched_files.push(PatchedFile {
-						old_hash: *hash,
-						new_hash: *new_hash,
+						old_hash: *old_hash,
+						new_hash: *hash,
 						path: path_to_string(path)?,
 						index: patched_with_types.len() as u64
 					});
@@ -328,10 +342,10 @@ impl DiffingDiff {
 				debug_assert_eq!(entry.paths_old.len(), 1);
 				// do we need to diff?
 				let path = &entry.paths_old[0];
-				if let Some(old_hash) = self.file_paths_new.get(path) {
+				if let Some(new_hash) = self.file_paths_new.get(path) {
 					manifest.patched_files.push(PatchedFile {
-						old_hash: *old_hash,
-						new_hash: *hash,
+						old_hash: *hash,
+						new_hash: *new_hash,
 						path: path_to_string(path)?,
 						index: patched_with_types.len() as u64
 					});
@@ -349,9 +363,10 @@ impl DiffingDiff {
 			bail!("All potential scan entry cases should have been handled, but this entry is slipping through the cracks:\n{entry:?}");
 		}
 
+		// this messes up all the blob indexes, i need a different implementation of sort.
 		// now, sort the list of diffs by file type
 		// :sparkles: logic deduplication :sparkles:
-		for l in [&mut patched_with_types, &mut new_with_types] {
+		/*for l in [&mut patched_with_types, &mut new_with_types] {
 			// splits a path by `/`, and reverses the order of the splits
 			let swap_name = |p: &PathBuf| {
 				p.to_str().map(|s| {
@@ -362,7 +377,7 @@ impl DiffingDiff {
 			// in rust you can use a tuple's ordering impl to do sort-by-then-by
 			// it will use the first element unless they return Ordering::Equal, then onto onto the next, etc
 			l.sort_by_key(|p| (p.1, swap_name(&p.0)));
-		}
+		}*/
 
 		// put the sorted arrays back into place
 		self.blobs_patch.extend(patched_with_types.into_iter().map(|p| p.0));
@@ -388,7 +403,7 @@ impl DiffingDiff {
 		// first, hash it
 		let resolved_path = root.join(path);
 		let hash = hash::hash_file(&resolved_path)?;
-
+		
 		// get working state
 		if let Some(state) = self.files.get_mut(&hash) {
 			// add our path
@@ -531,14 +546,22 @@ impl ApplyingDiff {
 
 		for _ in 0..patched_blob_count {
 			// keep track of the offset
-			new_self.blobs_new.push(reader.stream_position()?);
+			new_self.blobs_patch.push(reader.stream_position()?);
 
 			// read through array
-			// this is not that efficient but oh well
-			let mut deser = Deserializer::new(&mut *reader);
-			// lol name collision
-			serde::Deserializer::deserialize_any(&mut deser, IgnoredAny)
-				.context("Failed to read through patched file data")?;
+			// read chunk count
+			let mut count = [0u8; 8];
+			reader.read_exact(&mut count).context("Failed to read diff chunk count")?;
+			let count = u64::from_be_bytes(count);
+
+			for _ in 0..count {
+				// read chunk length
+				let mut len = [0u8; 8];
+				reader.read_exact(&mut len).context("Failed to read diff chunk length")?;
+				let len = u64::from_be_bytes(len);
+				// advance reader through it
+				reader.seek_relative(len as i64).context("Failed to seek through diff")?;
+			}
 		}
 
 		Ok(new_self)
@@ -587,7 +610,7 @@ impl ApplyingDiff {
 		}
 
 		// we need to create the directory to apply into
-		std::fs::create_dir_all(&self.new_root)?;
+		//std::fs::create_dir_all(&self.new_root)?;
 
 		// let's spawn some threads!
 		let errs = Mutex::new(Vec::new());
@@ -603,11 +626,11 @@ impl ApplyingDiff {
 					s.spawn(|_| {
 						// handle untouched files
 						for (h, p) in &self.manifest.untouched_files {
-							// std:;fs::copy would be faster, but we want to verify the hash
+							// std::fs::copy would be faster, but we want to verify the hash
 							let mut src = handle_res_async!(errs, File::open(self.old_root.join(p)), "Failed to open file to copy from {}", p);
-							let mut dst = handle_res_async!(errs, File::create(self.new_root.join(p)), "Failed to create file to copy to {}", p);
+							let mut dst = handle_res_async!(errs, create_file(&self.new_root.join(p)), "Failed to create file to copy to {}", p);
 
-							let mut hw = hash::HashStreamer::new(&mut dst);
+							let mut hw = hash::XXHashStreamer::new(&mut dst);
 							handle_res_async!(errs, std::io::copy(&mut src, &mut hw), "Failed to copy file {}", p);
 
 							let rh = hw.finish();
@@ -651,11 +674,53 @@ impl ApplyingDiff {
 							let mut checks: Vec<_> = d.new_paths
 								.par_iter()
 								.filter_map(|p| {
-									// performs an in-kernel copy for speed
-									match std::fs::copy(self.old_root.join(&d.old_paths[0]), self.new_root.join(p)).context(format!("Failed to copy file {p}")) {
-										Ok(_bytes_copied) => {},
-										Err(e) => return Some(e),
-									};
+									// if we have a file on disk, then perform an in-kernel copy for speed
+									if d.idx == u64::MAX {
+										// ensure we have a parent directory
+										let dest_path = self.new_root.join(p);
+										if let Some(par) = dest_path.parent() {
+											if let Err(e) = std::fs::create_dir_all(par).context(format!("Failed to create parent dir to copy file {p}")) {
+												return Some(e);
+											}
+										}
+
+										match std::fs::copy(self.old_root.join(&d.old_paths[0]), dest_path).context(format!("Failed to copy file {p}")) {
+											Ok(_bytes_copied) => {}
+											Err(e) => return Some(e),
+										};
+									}
+									else {
+										// we need to copy out of ourself
+										let blob = if let Some(t) = self.blobs_new.get(d.idx as usize) {
+												*t as usize
+											}
+											else {
+												return Some(anyhow!("new file {} had an out-of-range index pointing to its data", p));
+											};
+
+										// read length
+										let len = u64::from_be_bytes(*diff_map[blob..].first_chunk().unwrap()) as usize;
+										let blob = blob + 8; // advance past length
+
+										// copy
+										let mut read = Cursor::new(&diff_map[blob..(blob + len)]);
+										let f = match create_file(&self.new_root.join(p)).context(format!("Failed to create new file {p} to write to")) {
+											Ok(f) => f,
+											Err(e) => return Some(e),
+										};
+										let mut writer = hash::XXHashStreamer::new(f);
+
+										match std::io::copy(&mut read, &mut writer) {
+											Ok(_bytes_copied) => {},
+											Err(e) => return Some(anyhow::Error::from(e)),
+										};
+
+										// check hash
+										let rh = writer.finish();
+										if rh != d.hash {
+											return Some(anyhow!("Newly created file {p} does not match expected data"))
+										}
+									}
 									None
 								})
 								.collect();
@@ -684,13 +749,13 @@ impl ApplyingDiff {
 								};
 
 							// create new file
-							let mut dest = handle_res_async!(errs, File::create(self.new_root.join(&nf.path)), "Failed to create {} to write new file", &nf.path);
-							let mut wrt = hash::HashStreamer::new(&mut dest);
+							let mut dest = handle_res_async!(errs, create_file(&self.new_root.join(&nf.path)), "Failed to create {} to write new file", &nf.path);
+							let mut wrt = hash::XXHashStreamer::new(&mut dest);
 
 							// read length
 							let len = u64::from_be_bytes(*diff_map[blob..].first_chunk().unwrap()) as usize;
 							let blob = blob + 8; // advance past length
-							
+
 							// copy and decompress
 							let mut read = Cursor::new(&diff_map[blob..(blob + len)]);
 
@@ -713,13 +778,13 @@ impl ApplyingDiff {
 						// handle patched files
 						for pf in &self.manifest.patched_files {
 							let mut src = handle_res_async!(errs, File::open(self.old_root.join(&pf.path)), "Failed to open file to patch from {}", pf.path);
-							let mut dst = handle_res_async!(errs, File::create(self.new_root.join(&pf.path)), "Failed to create file to patch to {}", pf.path);
+							let mut dst = handle_res_async!(errs, create_file(&self.new_root.join(&pf.path)), "Failed to create file to patch to {}", pf.path);
 
 							// get length of src
 							let src_len = handle_res_async!(errs, src.metadata(), "Couldn't get length of patch source file {}", pf.path).len();
 
-							let mut src = hash::HashStreamer::new(&mut src);
-							let mut dst = hash::HashStreamer::new(&mut dst);
+							let mut src = hash::XXHashStreamer::new(&mut src);
+							let mut dst = hash::XXHashStreamer::new(&mut dst);
 
 							let blob = if let Some(t) = self.blobs_patch.get(pf.index as usize) {
 								*t as usize
@@ -731,9 +796,11 @@ impl ApplyingDiff {
 							// get diff blob ready
 							let mut diff = Cursor::new(&diff_map[blob..]);
 
+							// we can't use HashStreamer here due to it seeking around, and while I could make a memory buffered thing:tm:
+
 							// apply!
 							handle_res_async!(errs,
-								zstddiff::apply(&mut src, &mut diff, &mut dst, Some(src_len)),
+								zstddiff::apply(&mut src, &mut diff, &mut dst, src_len),
 								"Failed to apply diff for {}", pf.path);
 
 							let src_rh = src.finish();
