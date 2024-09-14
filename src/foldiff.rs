@@ -224,7 +224,14 @@ impl DiffingDiff {
 
 		// convenience func
 		let path_to_string = |p: &PathBuf| -> Result<String> {
-			Ok(p.to_str().ok_or(anyhow!("Found a non-UTF-8 path name. Just no. Why."))?.to_string())
+			let str = p.to_str().ok_or(anyhow!("Found a non-UTF-8 path name. Just no. Why."))?;
+			Ok(if cfg!(windows) {
+				// path replacement
+				assert!(p.is_relative(), "Cannot fix separators in a non-relative path, as this is not accepted by the windows apis for verbatim paths. This should never occur as the diff manifest only contains relative paths.");
+				str.replace('\\', "/")
+			} else {
+				str.to_string()
+			})
 		};
 
 		let mut manifest = DiffManifest::default();
