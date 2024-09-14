@@ -437,16 +437,15 @@ impl DiffingDiff {
 			if ftype.is_symlink() {
 				bail!("Entry at '{:?}' is a symlink, bailing", entry.path());
 			}
+			// strip the root off the front of the path else we get errors
+			let path = entry.path();
+			let path = path.strip_prefix(&root)?;
 			if ftype.is_dir() {
 				// recurse
-				self.scan_internal(&entry.path(), new, spinner)?;
+				self.scan_internal(&path, new, spinner)?;
 			}
 			else {
 				// file found!
-				// strip the root off the front of the path
-				// else we get errors in add_file
-				let path = entry.path();
-				let path = path.strip_prefix(&root)?;
 				self.add_file(new, path).context("While adding file to diff")?;
 			}
 
