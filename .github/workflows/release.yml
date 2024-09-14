@@ -1,0 +1,110 @@
+name: Build and release
+on: [ push, workflow_dispatch ]
+
+permissions:
+   contents: write
+
+env:
+   CARGO_TERM_COLOR: always
+   FORCE_COLOR: true
+
+jobs:
+   build:
+      name: Build for ${{ matrix.os }}
+      runs-on: ${{ matrix.os }}
+      strategy:
+         matrix:
+            include:
+               -  os: ubuntu-latest
+                  binsuffix: linux
+                  file: target/release/foldiff
+                  strip: true
+               -  os: windows-latest
+                  binsuffix: windows
+                  file: target/release/foldiff.exe
+                  strip: true
+               -  os: macos-latest
+                  binsuffix: macos
+                  file: target/release/foldiff
+                  strip: true
+
+      steps:
+         -  uses: actions/checkout@v3
+
+         -  name: Install Rust toolchain
+            id: install_rust
+            uses: actions-rs/toolchain@v1
+            with:
+               toolchain: stable
+               components: rustfmt, clippy
+
+         -  name: Install Linux specific packages
+            if: runner.os == 'Linux'
+            run: |
+               sudo apt-get update
+               sudo apt-get install build-essential clang-format libgtk-3-dev
+
+         -  uses: actions/cache@v2
+            with:
+               path: |
+                  ~/.cargo/registry
+                  ~/.cargo/git
+                  target
+               key: |
+                  v2-${{ github.workflow }}-${{ runner.os }}-rust-${{ steps.install_rust.outputs.rustc_hash }}-${{ hashFiles('**/Cargo.lock') }}
+               restore-keys: |
+                  v2-${{ github.workflow }}-${{ runner.os }}-rust-${{ steps.install_rust.outputs.rustc_hash }}-
+                  v2-${{ github.workflow }}-${{ runner.os }}-rust-
+
+         -  name: cargo build
+            run: cargo build --verbose --release
+
+         -  name: Upload artifact
+            uses: actions/upload-artifact@v4
+            with:
+               name: foliff-${{ matrix.binsuffix }}
+               path: ${{ matrix.file }}
+
+   release:
+      name: Create release
+      runs-on: ubuntu-latest
+      needs: [ build ]
+      if: startsWith(github.ref, 'refs/tags/')
+
+      steps:
+         -  uses: actions/checkout@v3
+
+         -  uses: actions/download-artifact@v4
+            with:
+               name: foldiff-linux
+               path: linux
+
+         -  uses: actions/download-artifact@v4
+            with:
+               name: foldiff-macos
+               path: macos
+
+         -  uses: actions/download-artifact@v4
+            with:
+               name: foldiff-windows
+               path: windows
+
+         -  name: Get some values needed for the release
+            id: release_values
+            run: |
+               echo "::set-output name=date::$(date '+%Y-%m-%d')"
+               echo "::set-output name=tag::${GITHUB_REF#refs/tags/}"
+
+         -  name: Rename files
+            run: |
+               mv linux/foldiff linux/foldiff.Linux
+               mv macos/foldiff macos/foldiff.MacOS
+
+         -  name: Create release
+            uses: softprops/action-gh-release@v1
+            with:
+               name: Foldiff ${{ steps.release_values.outputs.tag }}, ${{ steps.release_values.outputs.date }}
+               files: |
+                  linux/foldiff.Linux
+                  macos/foldiff.MacOS
+                  windows/foldiff.exe
