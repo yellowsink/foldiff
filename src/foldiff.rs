@@ -1,5 +1,5 @@
 use crate::utilities::create_file;
-use crate::{cliutils, handle_res_parit, zstddiff};
+use crate::{aggregate_errors, cliutils, handle_res_parit, zstddiff};
 use crate::hash;
 use anyhow::{anyhow, bail, ensure, Context, Result};
 use derivative::Derivative;
@@ -532,7 +532,7 @@ impl ApplyingDiff {
 		Ok(res)
 	}
 
-	pub fn apply(&mut self, old_root: PathBuf, new_root: PathBuf, cfg: &FldfCfg) -> Result<()> {
+	pub fn apply(&mut self, old_root: PathBuf, new_root: PathBuf) -> Result<()> {
 		self.old_root = old_root;
 		self.new_root = new_root;
 
@@ -778,13 +778,7 @@ impl ApplyingDiff {
 			}
 		});
 
-		let mut errs = errs.lock().unwrap();
-		if !errs.is_empty() {
-			if errs.len() == 1 {
-				return Err(errs.pop().unwrap());
-			}
-			bail!("Failed with multiple errors:\n{}", errs.iter().map(|e| format!("{e:?}")).reduce(|a, b| a + "\n" + &*b).unwrap())
-		}
+		aggregate_errors!(errs.into_inner()?);
 
 		cliutils::finish_spinner(&spn, false);
 		Ok(())

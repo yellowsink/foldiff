@@ -137,13 +137,6 @@ fn main() -> Result<()> {
 
 		}
 		Commands::Apply { old, diff, new } => {
-			let cfg = FldfCfg {
-				threads,
-				// levels are irrelevant
-				level_new: 0,
-				level_diff: 0
-			};
-
 			let old_root: PathBuf = old.into();
 			let new_root: PathBuf = new.into();
 			// check existence
@@ -163,7 +156,7 @@ fn main() -> Result<()> {
 			}
 
 			let mut diff_state = ApplyingDiff::read_from_file(&PathBuf::from(diff))?;
-			diff_state.apply(old_root, new_root, &cfg)?;
+			diff_state.apply(old_root, new_root)?;
 		},
 		Commands::Verify { new, old, diff } => {
 			if let Some(diff) = diff {

@@ -1,12 +1,13 @@
 use crate::foldiff::DiffManifest;
 use crate::hash::hash_file;
-use crate::cliutils;
+use crate::{aggregate_errors, cliutils, handle_res_async, throw_err_async};
 use anyhow::{bail, Result};
 use indicatif::ProgressBar;
 use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
 
 /// Checks if two directories are identical, printing results to stdout
 pub fn test_equality(r1: &Path, r2: &Path) -> Result<()> {
@@ -118,27 +119,26 @@ pub fn verify(r1: &Path, r2: &Path, manifest: &DiffManifest) -> Result<()> {
 		});
 	};
 	
+	let errors = Mutex::new(Vec::new());
+	
 	rayon::scope(|_| {
 		manifest.untouched_files
 			.par_iter()
 			.for_each(|(h, p)| {
-				// TODO: handle this error
-				_ = rayon::join(
+				rayon::join(
 					// old dir
 					|| {
 						let p = r1.join(p);
-						if hash_file(&p)? != *h {
+						if handle_res_async!(errors, hash_file(&p), "Failed to hash file {p:?}") != *h {
 							report_hash_err(&p);
 						}
-						anyhow::Ok(())
 					},
 					// new dir
 					|| {
 						let p = r2.join(p);
-						if hash_file(&p)? != *h {
+						if handle_res_async!(errors, hash_file(&p), "Failed to hash file {p:?}") != *h {
 							report_hash_err(&p);
 						}
-						anyhow::Ok(())
 					}
 				);
 			});
@@ -147,14 +147,15 @@ pub fn verify(r1: &Path, r2: &Path, manifest: &DiffManifest) -> Result<()> {
 			.par_iter()
 			.for_each(|(h, p)| {
 				let p = r1.join(p);
-				// TODO: handle this error
-				if hash_file(&p).unwrap() != *h {
+				if handle_res_async!(errors, hash_file(&p), "Failed to hash file {p:?}") != *h {
 					report_hash_err(&p);
 				}
 			});
 		
 		todo!() // finish this stuff lol
 	});
+	
+	aggregate_errors!(errors.into_inner()?);
 	
 	Ok(())
 }
