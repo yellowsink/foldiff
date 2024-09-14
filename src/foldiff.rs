@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-static VERSION_NUMBER: [u8; 4] = [0, 1, 0, b'b']; // v0.1.0-b
+static VERSION_NUMBER: [u8; 4] = [1, 0, 0, b'r']; // v1.0.0-r
 
 /// internal configuration struct passed into foldiff to control its operation from the cli
 #[derive(Copy, Clone, Debug)]
