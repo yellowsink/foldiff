@@ -101,11 +101,12 @@ all numbers are stored in big-endian, because it is the correct choice :)
 - [x] Diffing
   * [x] Working diff generator
   * [x] Does not keep blobs in memory
-  * [-] Multi-threaded (zstd is multithreaded but scanning, diffing, and compression are not)
+  * [ ] Multi-threaded (zstd is multithreaded but scanning, diffing, and compression are not)
 - [x] Applying
   * [x] Working application
   * [x] Does not keep blobs in memory
   * [x] Multi-threaded
-- [ ] Verifying
-  * [ ] Folder equality
-  * [ ] Diff hash checking
+- [x] Verifying
+  * [x] Folder equality
+  * [x] Diff checking
+    - [ ] Checks for unexpected files

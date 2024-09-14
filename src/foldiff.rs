@@ -75,26 +75,26 @@ pub struct ApplyingDiff {
 type HashAndPath = (u64, String);
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-struct NewFile {
-	hash: u64,
-	index: u64,
-	path: String,
+pub(crate) struct NewFile {
+	pub hash: u64,
+	pub index: u64,
+	pub path: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-struct DuplicatedFile {
-	hash: u64,
-	idx: u64, // u64::MAX == none
-	old_paths: Vec<String>,
-	new_paths: Vec<String>,
+pub(crate) struct DuplicatedFile {
+	pub hash: u64,
+	pub idx: u64, // u64::MAX == none
+	pub old_paths: Vec<String>,
+	pub new_paths: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-struct PatchedFile {
-	old_hash: u64,
-	new_hash: u64,
-	index: u64,
-	path: String,
+pub(crate) struct PatchedFile {
+	pub old_hash: u64,
+	pub new_hash: u64,
+	pub index: u64,
+	pub path: String,
 }
 
 impl DiffManifest {
