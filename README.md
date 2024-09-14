@@ -2,17 +2,52 @@
 
 A general purpose diffing tool that operates on folders of mixed text/binary files.
 
+## Motivation
+
+I like to keep frequent backup of data.
+I'm also a bit of a data hoarder and take exports of my data from places periodically.
+
+This leads to a bit of an issue when I go to upload these backups to my cloud storage—they're huge!
+My first attempt to solve this was by tarring the old and new folders with
+[tar-sorted](https://github.com/zholos/tar-sorted),
+and running the results through [xdelta3](https://github.com/jmacd/xdelta).
+
+This definitely worked, but not *well*. It often made unnecessarily huge diffs even once compressed.
+I knew we could do better, so I sat down and made it myself.
+
+Foldiff: a diffing program that takes two very similar directories and makes a *very* efficient diff
+file that can convert the old folder into the new one.
+
+This way I can compress and store the first backup, then I can just keep storing tiny diffs.
+Nice.
+
+I hope you find this as useful as I have :)
+
 ## Usage
 
+Create a diff:
 ```sh
-./foldiff diff old-files new-files diff.fldf
+foldiff diff old-files new-files diff.fldf
 ```
 
+Apply a diff:
 ```sh
-./foldiff apply old-files diff.fldf new-files
+foldiff apply old-files diff.fldf new-files
+```
+
+Check if two folders are the same
+```sh
+foldiff verify old-files new-files
+```
+
+Check if the first folder is in the state expected by the diff,
+and the second folder is equivalent to what that diff would output
+```sh
+foldiff verify old-files new-files diff.fldf
 ```
 
 Symlinks are not supported.
+Empty folders are not stored.
 
 ## General principle
 
