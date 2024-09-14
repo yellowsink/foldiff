@@ -315,17 +315,17 @@ impl DiffingDiff {
 				debug_assert_eq!(entry.paths_old.len(), 1);
 				// do we need to diff?
 				let path = &entry.paths_old[0];
-				if let Some(new_hash) = self.file_paths_new.get(path) {
-					manifest.patched_files.push(PatchedFile {
+				if let Some(_new_hash) = self.file_paths_new.get(path) {
+					// we're getting double-patches if we have this, as BOTH step 3 and step 4 match the same file pair.
+					/*manifest.patched_files.push(PatchedFile {
 						old_hash: *hash,
 						new_hash: *new_hash,
 						path: path_to_string(path)?,
 						index: patched_with_types.len() as u64
 					});
-					patched_with_types.push((path.clone(), entry.inferred_mime));
+					patched_with_types.push((path.clone(), entry.inferred_mime));*/
 				}
-				else
-				{
+				else {
 					// okay, we *are* a deleted file
 					manifest.deleted_files.push((*hash, path_to_string(path)?));
 				}
