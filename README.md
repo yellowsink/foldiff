@@ -4,6 +4,8 @@
 
 A general purpose diffing tool that operates on folders of mixed text/binary files.
 
+Get builds [here](https://github.com/yellowsink/foldiff/releases/latest) for Windows (x86-64), Linux (x86-64), and macOS (Arm).
+
 ## Motivation
 
 I like to keep frequent backup of data.
