@@ -1,5 +1,7 @@
 # Foldiff
 
+[![License: OQL](https://badgers.space/badge/License/OQL/pink)](https://oql.avris.it/license/v1.2)
+
 A general purpose diffing tool that operates on folders of mixed text/binary files.
 
 ## Motivation
