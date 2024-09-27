@@ -14,8 +14,11 @@ use std::io::{copy, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
+use zstd::{Decoder, Encoder};
 
-static VERSION_NUMBER: [u8; 4] = [1, 0, 0, b'r']; // v1.0.0-r
+static VERSION_NUMBER_1_0_0_R: [u8; 4] = [1, 0, 0, b'r']; // v1.0.0-r
+static VERSION_NUMBER_1_1_0: [u8; 4] = [0, 1, 1, 0]; // v1.1.0
+static VERSION_NUMBER_LATEST: [u8; 4] = VERSION_NUMBER_1_1_0;
 
 /// internal configuration struct passed into foldiff to control its operation from the cli
 #[derive(Copy, Clone, Debug)]
@@ -29,7 +32,8 @@ pub struct FldfCfg {
 #[derive(Clone, Debug, Serialize, Deserialize, Derivative)]
 #[derivative(Default)]
 pub struct DiffManifest {
-	#[derivative(Default(value="VERSION_NUMBER"))] // this really should be in std
+	#[deprecated]
+	#[derivative(Default(value="[0,0,0,0]"))] // invalid null default
 	version: [u8; 4],
 	pub untouched_files: Vec<HashAndPath>,
 	pub deleted_files: Vec<HashAndPath>,
@@ -41,7 +45,6 @@ pub struct DiffManifest {
 /// An in-memory representation of a diff, used for the diff creation process
 #[derive(Clone, Debug, Default)]
 pub struct DiffingDiff {
-	// manifest: DiffManifest,
 	blobs_new: Vec<PathBuf>,
 	blobs_patch: Vec<PathBuf>,
 	old_root: PathBuf,
@@ -98,7 +101,34 @@ pub(crate) struct PatchedFile {
 }
 
 impl DiffManifest {
-	pub fn read_from(mut reader: impl Read) -> Result<Self> {
+	fn read_100r(reader: impl Read) -> Result<Self> {
+		let mut deserializer = Deserializer::new(reader);
+		let manifest =
+			DiffManifest::deserialize(&mut deserializer).context("Failed to deserialize diff format")?;
+
+		// check version
+		ensure!(
+			manifest.version == VERSION_NUMBER_1_0_0_R,
+			"Did not recognise version number {:x?}",
+			manifest.version
+		);
+
+		Ok(manifest)
+	}
+
+	fn read_110(mut reader: impl Read) -> Result<Self> {
+		// read compressed data length
+		let mut len = [0u8; 8];
+		reader.read_exact(&mut len)?;
+		let len = u64::from_be_bytes(len);
+
+		let decoder = Decoder::new(reader.take(len))?;
+		let mut deser = Deserializer::new(decoder);
+
+		DiffManifest::deserialize(&mut deser).context("Failed to deserialize diff format")
+	}
+
+	pub fn read_from(mut reader: impl Read+Seek) -> Result<Self> {
 		// check magic bytes
 		let mut magic = [0u8, 0, 0, 0];
 		reader
@@ -109,21 +139,24 @@ impl DiffManifest {
 			"Magic bytes did not match expectation ({magic:x?} instead of 'FLDF')"
 		);
 
-		// deserialize msgpack data
-		// this better understand when to stop reading lol
-		let mut deserializer = Deserializer::new(reader);
-		let manifest =
-			DiffManifest::deserialize(&mut deserializer).context("Failed to deserialize diff format")?;
-		drop(deserializer); // this drops here anyway, but is load-bearing, so make it explicit
-
-		// check version
-		ensure!(
-			manifest.version == VERSION_NUMBER,
-			"Did not recognise version number {:x?}",
-			manifest.version
-		);
-
-		Ok(manifest)
+		// check next byte
+		let mut v_check = [0u8; 4];
+		reader.read_exact(&mut v_check)?;
+		if v_check[0] == 0 {
+			// null byte, we are using a compressed manifest
+			// check version
+			ensure!(
+				v_check == VERSION_NUMBER_1_1_0,
+				"Did not recognise version number {:x?}",
+				v_check
+			);
+			Self::read_110(reader)
+		}
+		else {
+			// we just read into a raw manifest
+			reader.seek_relative(-4)?;
+			Self::read_100r(reader)
+		}
 	}
 }
 
@@ -141,14 +174,24 @@ impl DiffingDiff {
 	pub fn write_to(&mut self, writer: &mut (impl Write + Seek), cfg: &FldfCfg) -> Result<()> {
 		writer.write_all("FLDF".as_bytes())?;
 
-		// with_struct_map makes it write compliant messagepack, but all that repetition is kinda euuugh
-		// emitting structs as tuples is wayyyy more compact
-		let mut serializer = Serializer::new(&mut *writer);//.with_struct_map(); // lol re-borrowing is goofy but sure
+		// write version number, includes null byte
+		writer.write_all(&VERSION_NUMBER_LATEST)?;
+		// leave space for length
+		writer.write_all(&[0u8; 8])?;
+
+		let mut wr = countio::Counter::new(&mut *writer);
+		let mut serializer = Serializer::new(Encoder::new(&mut wr, 19)?.auto_finish());
 		self
 			.generate_manifest()?
 			.serialize(&mut serializer)
 			.context("Failed to serialize diff format into file")?;
-		drop(serializer); // this drops here anyway, but is load-bearing, so make it explicit
+
+		drop(serializer); // load bearing drop
+		let comp_size = wr.writer_bytes();
+		// write manifest size
+		writer.seek_relative(-(comp_size as i64) - 8)?;
+		writer.write_all(&comp_size.to_be_bytes())?;
+		writer.seek_relative(comp_size as i64)?;
 
 		// write new files
 		writer.write_all(&(self.blobs_new.len() as u64).to_be_bytes())?;
@@ -169,7 +212,7 @@ impl DiffingDiff {
 				enc.include_contentsize(false)?;
 				enc.multithread(cfg.threads)?;
 
-				_ = copy(&mut f, &mut enc)?;
+				copy(&mut f, &mut enc)?;
 				enc.finish()?;
 
 				// write length

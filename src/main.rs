@@ -16,7 +16,13 @@ fn fetch_logical_procs() -> u32 {
 }
 
 #[derive(Parser, Debug)]
-#[command(version = "2023-09-06.r1", about)]
+#[command(
+	version = "v1.2.0",
+	about,
+	long_version = "v1.2.0
+   writing fldf v1.1.0
+   reading fldf 1.0.0-r, v1.1.0"
+)]
 struct Cli {
 	#[command(subcommand)]
 	command: Commands,

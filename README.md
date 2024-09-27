@@ -95,13 +95,18 @@ To apply the binary diff:
 - Decompress each diff using the old chunk as the dictionary with zstd
 - Concatenate the decompressed chunks
 
-## Stored file type
+## The FLDF File Format, v1.1.0
 
 all numbers are stored in big-endian, because it is the correct choice :)
 
+fields marked "(>100r)" are for versions AFTER fldf 1.0.0-r only,
+fields marked "(100r)" are only on fldf 1.0.0-r, and removed after that.
+
 - magic bytes, ASCII 'FLDF'
-- A messagepack object
-  - version number, [u8, u8, u8, 'r'|'b'|'a'], 1.0.0-r
+- (>100r) null byte, then three byte version num e.g. [0, 1, 1, 0]
+- (>100r) u64 byte length of compressed manifest
+- A messagepack object, raw if (100r), zstd-compressed if (>100r)
+  - (100r) version: `[0x1, 0x0, 0x0, 0x72]`, absent on newer versions
   - untouched files (list of following:)
     * path
     * [XXH64](https://xxhash.com/) hash

@@ -1,15 +1,14 @@
 ## to-do
 - refactors and cleanups
-- compress diff manifest
-- pull version back out of manifest
-- diff versioning handling
 - multithread diffing
    * scanning
    * diffing (maybe)
    * compressing (maybe)
+- `foldiff upgrade` - upgrade older manifests to new ones
 
 ## pending
-
+- switch to FLDF v1.1.0
+- diff versioning handling to allow still reading FLDF 1.0.0-r
 
 ## 1.1.0
 - Force windows to use the `/` path separator over `\` for portability.
