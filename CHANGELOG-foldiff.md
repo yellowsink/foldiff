@@ -1,6 +1,5 @@
 ## to-do
 - multithread diffing
-   * scanning
    * diffing (maybe)
    * compressing (maybe)
 - `foldiff upgrade` - upgrade older manifests to new ones
