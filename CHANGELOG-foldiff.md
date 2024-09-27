@@ -5,7 +5,7 @@
    * compressing (maybe)
 - `foldiff upgrade` - upgrade older manifests to new ones
 
-## pending
+## 1.2.0
 - switch to FLDF v1.1.0
 - diff versioning handling to allow still reading FLDF 1.0.0-r
 
