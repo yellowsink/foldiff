@@ -1,5 +1,4 @@
 ## to-do
-- refactors and cleanups
 - multithread diffing
    * scanning
    * diffing (maybe)

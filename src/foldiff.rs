@@ -284,14 +284,7 @@ impl DiffingDiff {
 		let spn = cliutils::create_spinner("Sorting scanned files", false, true);
 		spn.enable_steady_tick(Duration::from_millis(150));
 
-		// mime types of stored patches and of new files
-		let mut patched_with_types = Vec::new();
-		let mut new_with_types = Vec::new();
-
 		for (hash, entry) in &self.files {
-			// tick the bar
-			//bar.inc(1);
-
 			// step 1: are we unchanged?
 			if entry.paths_old.len() == 1 && entry.paths_new.len() == 1 && entry.paths_new[0] == entry.paths_old[0] {
 				manifest.untouched_files.push((*hash, path_to_string(&entry.paths_old[0])?));
@@ -317,8 +310,8 @@ impl DiffingDiff {
 				// are we *also* a new file?
 				let idx =
 					if entry.paths_old.is_empty() {
-						let i = new_with_types.len() as u64;
-						new_with_types.push((entry.paths_new[0].clone(), entry.inferred_mime));
+						let i = self.blobs_patch.len() as u64;
+						self.blobs_patch.push(entry.paths_new[0].clone());
 						i
 					}
 					else {
@@ -344,18 +337,18 @@ impl DiffingDiff {
 						old_hash: *old_hash,
 						new_hash: *hash,
 						path: path_to_string(path)?,
-						index: patched_with_types.len() as u64
+						index: self.blobs_patch.len() as u64
 					});
-					patched_with_types.push((path.clone(), entry.inferred_mime));
+					self.blobs_patch.push(path.clone());
 				}
 				else {
 					// okay, we *are* a new file
 					manifest.new_files.push(NewFile {
 						hash: *hash,
 						path: path_to_string(path)?,
-						index: new_with_types.len() as u64
+						index: self.blobs_new.len() as u64
 					});
-					new_with_types.push((path.clone(), entry.inferred_mime));
+					self.blobs_new.push(path.clone());
 				}
 				continue;
 			}
@@ -365,17 +358,10 @@ impl DiffingDiff {
 				debug_assert_eq!(entry.paths_old.len(), 1);
 				// do we need to diff?
 				let path = &entry.paths_old[0];
-				if let Some(_new_hash) = self.file_paths_new.get(path) {
-					// we're getting double-patches if we have this, as BOTH step 3 and step 4 match the same file pair.
-					/*manifest.patched_files.push(PatchedFile {
-						old_hash: *hash,
-						new_hash: *new_hash,
-						path: path_to_string(path)?,
-						index: patched_with_types.len() as u64
-					});
-					patched_with_types.push((path.clone(), entry.inferred_mime));*/
-				}
-				else {
+
+				// if path existed in file_paths_new, we'd generate a diff, but then we'd get doubles
+				// as that would be caught in step 3 too, so instead we just ignore in that case
+				if !self.file_paths_new.contains_key(path) {
 					// okay, we *are* a deleted file
 					manifest.deleted_files.push((*hash, path_to_string(path)?));
 				}
@@ -385,26 +371,6 @@ impl DiffingDiff {
 
 			bail!("All potential scan entry cases should have been handled, but this entry is slipping through the cracks:\n{entry:?}");
 		}
-
-		// this messes up all the blob indexes, i need a different implementation of sort.
-		// now, sort the list of diffs by file type
-		// :sparkles: logic deduplication :sparkles:
-		/*for l in [&mut patched_with_types, &mut new_with_types] {
-			// splits a path by `/`, and reverses the order of the splits
-			let swap_name = |p: &PathBuf| {
-				p.to_str().map(|s| {
-					s.rsplit("/").map(String::from).collect::<Box<[_]>>()
-				})
-			};
-
-			// in rust you can use a tuple's ordering impl to do sort-by-then-by
-			// it will use the first element unless they return Ordering::Equal, then onto onto the next, etc
-			l.sort_by_key(|p| (p.1, swap_name(&p.0)));
-		}*/
-
-		// put the sorted arrays back into place
-		self.blobs_patch.extend(patched_with_types.into_iter().map(|p| p.0));
-		self.blobs_new.extend(new_with_types.into_iter().map(|p| p.0));
 
 		cliutils::finish_spinner(&spn, false);
 
@@ -498,9 +464,6 @@ impl DiffingDiff {
 				// file found!
 				self.add_file(new, path).context("While adding file to diff")?;
 			}
-
-			// sleep for progress bar testing
-			//std::thread::sleep_ms(600);
 		}
 
 		Ok(())
