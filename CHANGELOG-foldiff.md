@@ -2,6 +2,9 @@
 - multithread diffing
    * diffing (maybe)
    * compressing (maybe)
+- foldiff file stats after diffing, before applying, and standalone
+
+## pending
 - `foldiff upgrade` - upgrade older manifests to new ones
 
 ## 1.2.0

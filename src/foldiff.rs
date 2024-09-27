@@ -16,9 +16,10 @@ use std::sync::Mutex;
 use std::time::Duration;
 use zstd::{Decoder, Encoder};
 
-static VERSION_NUMBER_1_0_0_R: [u8; 4] = [1, 0, 0, b'r']; // v1.0.0-r
-static VERSION_NUMBER_1_1_0: [u8; 4] = [0, 1, 1, 0]; // v1.1.0
-static VERSION_NUMBER_LATEST: [u8; 4] = VERSION_NUMBER_1_1_0;
+pub const MAGIC_BYTES: [u8; 4] = *b"FLDF";
+pub const VERSION_NUMBER_1_0_0_R: [u8; 4] = [1, 0, 0, b'r']; // v1.0.0-r
+pub const VERSION_NUMBER_1_1_0: [u8; 4] = [0, 1, 1, 0]; // v1.1.0
+pub const VERSION_NUMBER_LATEST: [u8; 4] = VERSION_NUMBER_1_1_0;
 
 /// internal configuration struct passed into foldiff to control its operation from the cli
 #[derive(Copy, Clone, Debug)]
@@ -32,7 +33,6 @@ pub struct FldfCfg {
 #[derive(Clone, Debug, Serialize, Deserialize, Derivative)]
 #[derivative(Default)]
 pub struct DiffManifest {
-	#[deprecated]
 	#[derivative(Default(value="[0,0,0,0]"))] // invalid null default
 	version: [u8; 4],
 	pub untouched_files: Vec<HashAndPath>,
@@ -101,7 +101,7 @@ pub(crate) struct PatchedFile {
 }
 
 impl DiffManifest {
-	fn read_100r(reader: impl Read) -> Result<Self> {
+	pub fn read_100r(reader: impl Read) -> Result<Self> {
 		let mut deserializer = Deserializer::new(reader);
 		let manifest =
 			DiffManifest::deserialize(&mut deserializer).context("Failed to deserialize diff format")?;
@@ -116,7 +116,7 @@ impl DiffManifest {
 		Ok(manifest)
 	}
 
-	fn read_110(mut reader: impl Read) -> Result<Self> {
+	pub fn read_110(mut reader: impl Read) -> Result<Self> {
 		// read compressed data length
 		let mut len = [0u8; 8];
 		reader.read_exact(&mut len)?;
@@ -128,34 +128,47 @@ impl DiffManifest {
 		DiffManifest::deserialize(&mut deser).context("Failed to deserialize diff format")
 	}
 
-	pub fn read_from(mut reader: impl Read+Seek) -> Result<Self> {
-		// check magic bytes
+	// checks the magic bytes are valid, reads the version, rewinds by 4 bytes if 1.0.0-r, and returns it.
+	// does not check that raw manifests contain the 1.0.0-r version, you must check that yourself.
+	// for compressed manfests, verifies that the version is supported by this software.
+	pub fn verify_and_read_ver(mut reader: impl Read+Seek) -> Result<[u8; 4]> {
 		let mut magic = [0u8, 0, 0, 0];
 		reader
 			.read_exact(&mut magic)
-			.context("Failed to read while creating diff format")?;
+			.context("Failed to read magic bytes from diff")?;
 		ensure!(
-			magic == "FLDF".as_bytes(),
+			magic == MAGIC_BYTES,
 			"Magic bytes did not match expectation ({magic:x?} instead of 'FLDF')"
 		);
 
 		// check next byte
-		let mut v_check = [0u8; 4];
-		reader.read_exact(&mut v_check)?;
-		if v_check[0] == 0 {
+		let mut ver = [0u8; 4];
+		reader.read_exact(&mut ver)?;
+		if ver[0] == 0 {
 			// null byte, we are using a compressed manifest
 			// check version
 			ensure!(
-				v_check == VERSION_NUMBER_1_1_0,
+				ver == VERSION_NUMBER_1_1_0,
 				"Did not recognise version number {:x?}",
-				v_check
+				ver
 			);
-			Self::read_110(reader)
+			Ok(ver)
 		}
 		else {
-			// we just read into a raw manifest
+			// we just read into a raw manifest - 1.0.0-r
 			reader.seek_relative(-4)?;
+			Ok(VERSION_NUMBER_1_0_0_R)
+		}
+	}
+
+	pub fn read_from(mut reader: impl Read+Seek) -> Result<Self> {
+		let ver = Self::verify_and_read_ver(&mut reader)?;
+
+		if ver == VERSION_NUMBER_1_0_0_R {
 			Self::read_100r(reader)
+		}
+		else {
+			Self::read_110(reader)
 		}
 	}
 }
@@ -172,7 +185,7 @@ impl DiffingDiff {
 	/// handles finalising an in-memory diffing state to disk
 	/// takes mut as it also has to set blobs_new and blobs_patch
 	pub fn write_to(&mut self, writer: &mut (impl Write + Seek), cfg: &FldfCfg) -> Result<()> {
-		writer.write_all("FLDF".as_bytes())?;
+		writer.write_all(&MAGIC_BYTES)?;
 
 		// write version number, includes null byte
 		writer.write_all(&VERSION_NUMBER_LATEST)?;

@@ -10,6 +10,7 @@ mod hash;
 mod cliutils;
 mod utilities;
 mod verify;
+mod upgrade;
 
 fn fetch_logical_procs() -> u32 {
 	num_cpus::get() as u32
@@ -79,6 +80,13 @@ enum Commands {
 		new: String,
 		/// If supplied, the path to the diff to verify against. If not supplied, just checks if the folders are identical
 		diff: Option<String>
+	},
+	/// Upgrade a diff from an old file format to the current version
+	Upgrade {
+		/// Path to the old diff
+		old: String,
+		/// Path to the destination location
+		new: String,
 	}
 }
 
@@ -173,6 +181,23 @@ fn main() -> Result<()> {
 			else {
 				verify::test_equality(Path::new(old), Path::new(new))?;
 			}
+		},
+		Commands::Upgrade { new, old } => {
+			if std::fs::exists(new).context("Failed to check for destination existence")? {
+				if !cli.force {
+					let cont = cliutils::confirm("Destination file exists, overwrite it?")?;
+					
+					if !cont {
+						bail!("Destination file already exists");
+					}
+				}
+				
+				std::fs::remove_file(new).context("Failed to remove file")?;
+			}
+			let fold = File::open(old).context("Failed to open old diff file")?;
+			let fnew = File::create(new).context("Failed to create destination file")?;
+			
+			upgrade::auto_upgrade(fold, fnew)?;
 		},
 	}
 
