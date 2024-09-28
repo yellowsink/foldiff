@@ -1,14 +1,14 @@
+use crate::common::create_file;
+use crate::manifest::DiffManifest;
+use crate::reporting::{AutoSpin, CanBeWrappedBy, Reporter, ReporterSized, ReportingMultiWrapper};
+use crate::{aggregate_errors, handle_res_parit, hash, zstddiff};
+use anyhow::{anyhow, Context};
+use memmap2::Mmap;
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::{Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
-use anyhow::{anyhow, Context};
-use memmap2::Mmap;
-use crate::manifest::DiffManifest;
-use rayon::prelude::*;
-use crate::{aggregate_errors, handle_res_parit, hash, zstddiff};
-use crate::common::create_file;
 
 /// An in-memory representation of a diff, used for the applying process
 #[derive(Debug, Default)]
@@ -22,7 +22,11 @@ pub struct ApplyingDiff {
 }
 
 impl ApplyingDiff {
-	pub fn apply(&mut self, old_root: PathBuf, new_root: PathBuf) -> anyhow::Result<()> {
+	pub fn apply<
+		TWrap: ReportingMultiWrapper,
+		TSpin: Reporter + CanBeWrappedBy<TWrap> + Sync,
+		TBar: ReporterSized + CanBeWrappedBy<TWrap> + Sync
+	>(&mut self, old_root: PathBuf, new_root: PathBuf) -> anyhow::Result<()> {
 		self.old_root = old_root;
 		self.new_root = new_root;
 
@@ -31,31 +35,31 @@ impl ApplyingDiff {
 		let num_duped_files: u64 = self.manifest.duplicated_files.iter().map(|d| d.new_paths.len() as u64).sum();
 
 		// incr bar and finish if done
-		let inc_n = |n: u64, b: &ProgressBar| {
-			b.inc(n);
-			if Some(b.position()) == b.length() {
-				cliutils::finish_bar(b);
+		let inc_n = |n: usize, b: &TBar| {
+			b.incr(n);
+			if b.count() == b.length() {
+				b.done();
 			}
 		};
-		let inc = |b: &ProgressBar| inc_n(1, b);
+		let inc = |b: &TBar| inc_n(1, b);
 
 		// progress reporting
-		let wrap = MultiProgress::new();
-		let spn = wrap.add(cliutils::create_spinner("Applying diff", false, false));
-		let bar_untouched = wrap.add(cliutils::create_bar("Copying unchanged files", (self.manifest.untouched_files.len() as u64)  + num_duped_files, false));
-		let bar_new = wrap.add(cliutils::create_bar("Creating new files", self.manifest.new_files.len() as u64, false));
-		let bar_patched = wrap.add(cliutils::create_bar("Applying patched files", self.manifest.patched_files.len() as u64, false));
+		let wrap = TWrap::new();
+		let spn = TSpin::new("Applying diff").add_to(&wrap);
+		let bar_untouched = <TBar as ReporterSized>::new("Copying unchanged files", self.manifest.untouched_files.len() + (num_duped_files as usize)).add_to(&wrap);
+		let bar_new = <TBar as ReporterSized>::new("Creating new files", self.manifest.new_files.len()).add_to(&wrap);
+		let bar_patched = <TBar as ReporterSized>::new("Applying patched files", self.manifest.patched_files.len()).add_to(&wrap);
 
-		// need to do this manually because of it being in a wrap
-		for b in [&spn, &bar_untouched, &bar_new, &bar_patched] {
-			b.enable_steady_tick(Duration::from_millis(50));
-		}
+		let as1 = AutoSpin::spin(&spn);
+		let as2 = AutoSpin::spin(&bar_untouched);
+		let as3 = AutoSpin::spin(&bar_new);
+		let as4 = AutoSpin::spin(&bar_patched);
 
 		// let's spawn some threads!
 		let errs = Mutex::new(Vec::new());
 		rayon::scope(|s| {
 			if self.manifest.untouched_files.is_empty() && self.manifest.duplicated_files.is_empty() {
-				bar_untouched.finish_and_clear();
+				bar_untouched.done_clear();
 			}
 			else {
 				s.spawn(|_| {
@@ -161,12 +165,12 @@ impl ApplyingDiff {
 							return;
 						}
 
-						inc_n(d.new_paths.len() as u64, &bar_untouched);
+						inc_n(d.new_paths.len(), &bar_untouched);
 					}
 				});
 			}
 			if self.manifest.new_files.is_empty() {
-				bar_new.finish_and_clear();
+				bar_new.done_clear();
 			}
 			else {
 				s.spawn(|_| {
@@ -212,7 +216,7 @@ impl ApplyingDiff {
 				});
 			}
 			if self.manifest.patched_files.is_empty() {
-				bar_patched.finish_and_clear();
+				bar_patched.done_clear();
 			}
 			else {
 				s.spawn(|_| {
@@ -267,7 +271,10 @@ impl ApplyingDiff {
 
 		aggregate_errors!(errs.into_inner()?);
 
-		cliutils::finish_spinner(&spn, false);
+		as1.all_good();
+		drop(as2);
+		drop(as3);
+		drop(as4);
 		Ok(())
 	}
 }

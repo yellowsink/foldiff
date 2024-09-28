@@ -132,11 +132,11 @@ fn main() -> Result<()> {
 			}
 
 			// scan the file system
-			let mut diff_state = libfoldiff::diffing::scan_to_diff(old_root, new_root)?;
+			let mut diff_state = libfoldiff::diffing::scan_to_diff::<cliutils::Spinner<true>>(old_root, new_root)?;
 			//println!("{diff_state:?}");
 
 			// emit the diff to disk
-			diff_state.write_to_file(Path::new(diff), &cfg)?;
+			diff_state.write_to_file::<cliutils::Bar, cliutils::Spinner<false>>(Path::new(diff), &cfg)?;
 
 		}
 		Commands::Apply { old, diff, new } => {
@@ -159,16 +159,20 @@ fn main() -> Result<()> {
 			}
 
 			let mut diff_state = libfoldiff::applying::read_diff_from_file(&PathBuf::from(diff))?;
-			diff_state.apply(old_root, new_root)?;
+			diff_state.apply::<
+				cliutils::MultiWrapper,
+				cliutils::Spinner<false>,
+				cliutils::Bar
+			>(old_root, new_root)?;
 		},
 		Commands::Verify { new, old, diff } => {
 			if let Some(diff) = diff {
 				let f = File::open(diff).context("Failed to open diff file to verify with")?;
 				let manifest = DiffManifest::read_from(f).context("Failed to read diff file to verify with")?;
-				libfoldiff::verify::verify_against_diff(Path::new(old), Path::new(new), &manifest)?;
+				libfoldiff::verify::verify_against_diff::<cliutils::Spinner<true>>(Path::new(old), Path::new(new), &manifest)?;
 			}
 			else {
-				libfoldiff::verify::test_dir_equality(Path::new(old), Path::new(new))?;
+				libfoldiff::verify::test_dir_equality::<cliutils::Spinner<true>>(Path::new(old), Path::new(new))?;
 			}
 		},
 		Commands::Upgrade { new, old } => {
@@ -186,7 +190,7 @@ fn main() -> Result<()> {
 			let fold = File::open(old).context("Failed to open old diff file")?;
 			let fnew = File::create(new).context("Failed to create destination file")?;
 
-			libfoldiff::upgrade::auto_upgrade(fold, fnew)?;
+			libfoldiff::upgrade::auto_upgrade::<cliutils::Spinner<false>>(fold, fnew)?;
 		},
 	}
 

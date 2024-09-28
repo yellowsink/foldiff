@@ -1,8 +1,8 @@
 use anyhow::Result;
 use dialoguer::Confirm;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::sync::LazyLock;
-use std::time::Duration;
+use libfoldiff::reporting::{CanBeWrappedBy, Reporter, ReporterSized, ReportingMultiWrapper};
 
 pub fn confirm(msg: &str) -> Result<bool> {
 	Ok(Confirm::new().with_prompt(msg).interact()?)
@@ -45,34 +45,120 @@ static PROGRESS_STYLE_FINISHED: LazyLock<ProgressStyle> = LazyLock::new(|| {
 	).unwrap().tick_strings(SPINNER_TICKS)
 });
 
-pub fn create_spinner(msg: &str, count: bool, auto: bool) -> ProgressBar {
-	let s = ProgressBar::new_spinner().with_message(msg.to_string()).with_style(
-		if count { SPINNER_STYLE_COUNT.clone() } else { SPINNER_STYLE_SIMPLE.clone() }
-	);
-	if auto {
-		s.enable_steady_tick(Duration::from_millis(50));
-		s.tick();
+// implement libfoldiff::reporting for indicatif
+
+pub struct Spinner<const COUNT: bool>(ProgressBar);
+
+impl<const COUNT: bool> Reporter for Spinner<COUNT> {
+	fn new(msg: &str) -> Self {
+		Self(ProgressBar::new_spinner()
+			.with_message(msg.to_string())
+			.with_style(
+				if COUNT { SPINNER_STYLE_COUNT.clone() } else { SPINNER_STYLE_SIMPLE.clone() }
+			))
 	}
-	s
-}
 
-pub fn finish_spinner(s: &ProgressBar, count: bool) {
-	s.set_style(
-		if count { SPINNER_STYLE_FINISHED_COUNT.clone() } else { SPINNER_STYLE_FINISHED_SIMPLE.clone() }
-	);
-	s.abandon();
-}
-
-pub fn create_bar(msg: &str, len: u64, auto: bool) -> ProgressBar {
-	let b = ProgressBar::new(len).with_message(msg.to_string()).with_style(PROGRESS_STYLE.clone());
-	if auto {
-		b.enable_steady_tick(Duration::from_millis(50));
-		b.tick();
+	fn incr(&self, n: usize) {
+		// TODO: retain normal steady-tick implementation of incr() not ticking it
+		self.0.inc(n as u64);
 	}
-	b
+
+	fn count(&self) -> usize {
+		self.0.position() as usize
+	}
+
+	fn tick(&self) {
+		self.0.tick();
+	}
+
+	fn done_clear(&self) {
+		self.0.finish_and_clear();
+	}
+
+	fn done(&self) {
+		self.0.set_style(
+			if COUNT { SPINNER_STYLE_FINISHED_COUNT.clone() } else { SPINNER_STYLE_FINISHED_SIMPLE.clone() }
+		);
+		self.0.abandon();
+	}
+
+	fn suspend<F: FnOnce() -> R, R>(&self, f: F) -> R {
+		self.0.suspend(f)
+	}
 }
 
-pub fn finish_bar(b: &ProgressBar) {
-	b.set_style(PROGRESS_STYLE_FINISHED.clone());
-	b.abandon();
+pub struct Bar(ProgressBar);
+
+impl Reporter for Bar {
+	fn new(msg: &str) -> Self {
+		Self(ProgressBar::new(0)
+			.with_message(msg.to_string())
+			.with_style(PROGRESS_STYLE.clone()))
+	}
+
+	fn incr(&self, n: usize) {
+		self.0.inc(n as u64);
+	}
+
+	fn count(&self) -> usize {
+		self.0.position() as usize
+	}
+
+	fn tick(&self) {
+		self.0.tick();
+	}
+
+	fn done_clear(&self) {
+		self.0.finish_and_clear();
+	}
+
+	fn done(&self) {
+		self.0.set_style(PROGRESS_STYLE_FINISHED.clone());
+		self.0.abandon();
+	}
+
+	fn suspend<F: FnOnce() -> R, R>(&self, f: F) -> R {
+		self.0.suspend(f)
+	}
+}
+
+impl ReporterSized for Bar {
+	fn new(msg: &str, len: usize) -> Self {
+		Self(ProgressBar::new(len as u64)
+			.with_message(msg.to_string())
+			.with_style(PROGRESS_STYLE.clone()))
+	}
+
+	fn set_len(&self, len: usize) {
+		self.0.set_length(len as u64);
+	}
+
+	fn length(&self) -> usize {
+		self.0.length().unwrap() as usize
+	}
+}
+
+// this is really unnecessary but ok rust, sure, foreign trait implementation rules
+pub struct MultiWrapper(MultiProgress);
+
+impl ReportingMultiWrapper for MultiWrapper {
+	fn new() -> Self {
+		MultiWrapper(MultiProgress::new())
+	}
+	
+	fn suspend<F: FnOnce() -> R, R>(&self, f: F) -> R {
+		self.0.suspend(f)
+	}
+}
+
+impl<const COUNT: bool> CanBeWrappedBy<MultiWrapper> for Spinner<COUNT> {
+	fn add_to(self, w: &MultiWrapper) -> Self {
+		Spinner(w.0.add(self.0))
+	}
+}
+
+impl CanBeWrappedBy<MultiWrapper> for Bar {
+	fn add_to(self, w: &MultiWrapper) -> Self {
+		Bar(w.0.add(self.0))
+	}
 }

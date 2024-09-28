@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{copy, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use anyhow::{anyhow, bail, Context};
 use rmp_serde::Serializer;
 use serde::Serialize;
@@ -10,6 +9,7 @@ use zstd::Encoder;
 use crate::common::{FoldiffCfg, MAGIC_BYTES, VERSION_NUMBER_LATEST};
 use crate::manifest::{DiffManifest, DuplicatedFile, NewFile, PatchedFile};
 use crate::{hash, zstddiff};
+use crate::reporting::{AutoSpin, Reporter, ReporterSized};
 
 /// An in-memory representation of a diff, used for the diff creation process
 #[derive(Clone, Debug, Default)]
@@ -44,7 +44,7 @@ impl DiffingDiff {
 
 	/// handles finalising an in-memory diffing state to disk
 	/// takes mut as it also has to set blobs_new and blobs_patch
-	pub fn write_to(&mut self, writer: &mut (impl Write + Seek), cfg: &FoldiffCfg) -> anyhow::Result<()> {
+	pub fn write_to<TBar: ReporterSized, TSpin: Reporter+Sync>(&mut self, writer: &mut (impl Write + Seek), cfg: &FoldiffCfg) -> anyhow::Result<()> {
 		writer.write_all(&MAGIC_BYTES)?;
 
 		// write version number, includes null byte
@@ -55,7 +55,7 @@ impl DiffingDiff {
 		let mut wr = countio::Counter::new(&mut *writer);
 		let mut serializer = Serializer::new(Encoder::new(&mut wr, 19)?.auto_finish());
 		self
-			.generate_manifest()?
+			.generate_manifest::<TSpin>()?
 			.serialize(&mut serializer)
 			.context("Failed to serialize diff format into file")?;
 
@@ -70,7 +70,7 @@ impl DiffingDiff {
 		writer.write_all(&(self.blobs_new.len() as u64).to_be_bytes())?;
 
 		if !self.blobs_new.is_empty() {
-			let bar = cliutils::create_bar("Compressing new files", self.blobs_new.len() as u64, true);
+			let bar = <TBar as ReporterSized>::new("Compressing new files", self.blobs_new.len());
 			for path in &self.blobs_new {
 				let mut f =
 					File::open(self.new_root.join(path)).context("Failed to open file while copying newly added files")?;
@@ -83,7 +83,7 @@ impl DiffingDiff {
 				enc.set_pledged_src_size(Some(f.metadata()?.len()))?;
 				enc.include_checksum(false)?;
 				enc.include_contentsize(false)?;
-				enc.multithread(cfg.threads)?;
+				enc.multithread(cfg.threads as u32)?;
 
 				copy(&mut f, &mut enc)?;
 				enc.finish()?;
@@ -94,9 +94,9 @@ impl DiffingDiff {
 				writer.write_all(&bytes.to_be_bytes())?;
 				writer.seek_relative(bytes as i64)?;
 
-				bar.inc(1);
+				bar.incr(1);
 			}
-			cliutils::finish_bar(&bar);
+			bar.done();
 		}
 
 		// write patches
@@ -105,7 +105,7 @@ impl DiffingDiff {
 
 		// perform diffing
 		if !self.blobs_patch.is_empty() {
-			let bar = cliutils::create_bar("Diffing changed files", self.blobs_patch.len() as u64, true);
+			let bar = <TBar as ReporterSized>::new("Diffing changed files", self.blobs_patch.len());
 			for p in &self.blobs_patch {
 				let mut old = File::open(self.old_root.join(p)).context("Failed to open old file for diffing")?;
 				let mut new = File::open(self.new_root.join(p)).context("Failed to open new file for diffing")?;
@@ -115,24 +115,24 @@ impl DiffingDiff {
 
 				zstddiff::diff(&mut old, &mut new, &mut *writer, Some(cfg.level_diff), Some(cfg.threads), Some(ol), Some(nl))
 					.context("Failed to perform diff")?;
-				bar.inc(1);
+				bar.incr(1);
 			}
-			cliutils::finish_bar(&bar);
+			bar.done();
 		}
 
 		Ok(())
 	}
 
-	pub fn write_to_file(&mut self, path: &Path, cfg: &FoldiffCfg) -> anyhow::Result<()> {
+	pub fn write_to_file<TBar: ReporterSized, TSpin: Reporter+Sync>(&mut self, path: &Path, cfg: &FoldiffCfg) -> anyhow::Result<()> {
 		// create file
 		let mut f = File::create_new(path).context("Failed to create file to save diff")?;
 
-		self.write_to(&mut f, cfg)
+		self.write_to::<TBar, TSpin>(&mut f, cfg)
 	}
 
 	/// generates the on-disk manifest format from the in-memory working data
 	/// also populates self.blobs_new and self.blobs_patch
-	pub fn generate_manifest(&mut self) -> anyhow::Result<DiffManifest> {
+	pub fn generate_manifest<TSpin: Reporter+Sync>(&mut self) -> anyhow::Result<DiffManifest> {
 		// generally, the on-disk manifest is a really annoying data structure for building diffs
 		// so instead, we work with a map from hash to file data, as if every file was a duplicated one
 		// this function will figure out which files fall into which category,
@@ -152,10 +152,9 @@ impl DiffingDiff {
 
 		let mut manifest = DiffManifest::default();
 
-		// this is *so* fast that i'm not even going to bother with a progress bar.
-		//let bar = cliutils::create_bar("Sorting scanned files", self.files.len() as u64);
-		let spn = cliutils::create_spinner("Sorting scanned files", false, true);
-		spn.enable_steady_tick(Duration::from_millis(150));
+		// this is *so* fast that i'm not even going to bother with a progress bar, a spinner is fine.
+		let spn = TSpin::new("Sorting scanned files");
+		let spn = AutoSpin::spin(&spn);
 
 		for (hash, entry) in &self.files {
 			// step 1: are we unchanged?
@@ -245,8 +244,8 @@ impl DiffingDiff {
 			bail!("All potential scan entry cases should have been handled, but this entry is slipping through the cracks:\n{entry:?}");
 		}
 
-		cliutils::finish_spinner(&spn, false);
-
+		spn.all_good();
+		
 		// we're done!
 		Ok(manifest)
 	}
@@ -291,7 +290,7 @@ impl DiffingDiff {
 		Ok(())
 	}
 
-	fn scan_internal(&mut self, dir: &Path, new: bool, spinner: Option<&ProgressBar>) -> anyhow::Result<()> {
+	fn scan_internal(&mut self, dir: &Path, new: bool, spn: &impl Reporter) -> anyhow::Result<()> {
 		let root = if new { &self.new_root } else { &self.old_root };
 		// we need to clone this, aw
 		let root = root.clone();
@@ -302,11 +301,8 @@ impl DiffingDiff {
 		for entry in entries {
 			let entry = entry.with_context(|| format!("Failed to read entry while scanning {dir:?}"))?;
 
-			// tick!
-			if let Some(s) = spinner {
-				s.inc(1);
-			}
-
+			spn.incr(1);
+			
 			// are we a directory or a file?
 			let ftype = entry.file_type().context("While reading entry type")?;
 			if ftype.is_symlink() {
@@ -317,7 +313,7 @@ impl DiffingDiff {
 			let path = path.strip_prefix(&root)?;
 			if ftype.is_dir() {
 				// recurse
-				self.scan_internal(&path, new, spinner)?;
+				self.scan_internal(&path, new, spn)?;
 			}
 			else {
 				// file found!
@@ -329,16 +325,18 @@ impl DiffingDiff {
 	}
 }
 
-pub fn scan_to_diff(old_root: PathBuf, new_root: PathBuf) -> anyhow::Result<DiffingDiff> {
+pub fn scan_to_diff<TSpin: Reporter+Sync>(old_root: PathBuf, new_root: PathBuf) -> anyhow::Result<DiffingDiff> {
 	let mut new_self = DiffingDiff::new(old_root, new_root);
 
-	let bar = cliutils::create_spinner("Scanning old files", true, true);
-	new_self.scan_internal(Path::new(""), false, Some(&bar))?;
-	cliutils::finish_spinner(&bar, true);
+	let spn = TSpin::new("Scanning old files");
+	let aspn = AutoSpin::spin(&spn);
+	new_self.scan_internal(Path::new(""), false, &spn)?;
+	aspn.all_good();
 
-	let bar = cliutils::create_spinner("Scanning new files", true, true);
-	new_self.scan_internal(Path::new(""), true, Some(&bar))?;
-	cliutils::finish_spinner(&bar, true);
+	let spn = TSpin::new("Scanning new files");
+	let aspn = AutoSpin::spin(&spn);
+	new_self.scan_internal(Path::new(""), true, &spn)?;
+	aspn.all_good();
 
 	Ok(new_self)
 }

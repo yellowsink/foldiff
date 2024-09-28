@@ -6,16 +6,18 @@ use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
+use crate::reporting::{AutoSpin, Reporter};
 
 /// Checks if two directories are identical, printing results to stdout
-pub fn test_dir_equality(r1: &Path, r2: &Path) -> Result<()> {
-	let spinner = cliutils::create_spinner("Scanning folders", true, true);
-	test_equality_internal(r1, r2, Path::new(""), &spinner)?;
-	cliutils::finish_spinner(&spinner, true);
+pub fn test_dir_equality<TSpin: Reporter+Sync>(r1: &Path, r2: &Path) -> Result<()> {
+	let spn = TSpin::new("Scanning folders");
+	let aspn = AutoSpin::spin(&spn);
+	test_equality_internal(r1, r2, Path::new(""), &spn)?;
+	aspn.all_good();
 	Ok(())
 }
 
-fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &ProgressBar) -> Result<()> {
+fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &(impl Reporter+Sync)) -> Result<()> {
 	// stat both paths
 	let path1 = r1.join(p);
 	let path2 = r2.join(p);
@@ -29,7 +31,7 @@ fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &ProgressBar) -> 
 		bail!("Found a symlink at {:?}", path2);
 	}
 
-	spn.inc(1);
+	spn.incr(1);
 
 	if type1.is_file() {
 		if type2.is_file() {
@@ -79,7 +81,7 @@ fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &ProgressBar) -> 
 								spn.suspend(|| {
 									println!("{:?} only exists in the first folder.", p.join(f));
 								});
-								spn.inc(1);
+								spn.incr(1);
 							}
 							else {
 								// we have both! recurse.
@@ -96,7 +98,7 @@ fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &ProgressBar) -> 
 							spn.suspend(|| {
 								println!("{:?} only exists in the second folder.", p.join(f));
 							});
-							spn.inc(1);
+							spn.incr(1);
 						}
 					}),
 		);
@@ -108,8 +110,9 @@ fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &ProgressBar) -> 
 }
 
 /// Checks if two directories match the given manifest, printing results to stdout
-pub fn verify_against_diff(r1: &Path, r2: &Path, manifest: &DiffManifest) -> Result<()> {
-	let spn = cliutils::create_spinner("Verifying files", true, true);
+pub fn verify_against_diff<TSpin: Reporter+Sync>(r1: &Path, r2: &Path, manifest: &DiffManifest) -> Result<()> {
+	let spn = TSpin::new("Verifying files");
+	let aspn = AutoSpin::spin(&spn);
 	
 	let errors: Vec<_> =
 		manifest.untouched_files
@@ -147,7 +150,7 @@ pub fn verify_against_diff(r1: &Path, r2: &Path, manifest: &DiffManifest) -> Res
 						println!("{p:?} is not as expected");
 					})
 				}
-				spn.inc(1);
+				spn.incr(1);
 				anyhow::Ok(())
 			})
 			.filter_map(|r| match r {
@@ -156,7 +159,7 @@ pub fn verify_against_diff(r1: &Path, r2: &Path, manifest: &DiffManifest) -> Res
 			})
 			.collect();
 
-	cliutils::finish_spinner(&spn, true);
+	aspn.all_good();
 
 	aggregate_errors!(errors);
 

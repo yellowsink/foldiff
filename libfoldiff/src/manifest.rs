@@ -22,14 +22,14 @@ pub struct DiffManifest {
 type HashAndPath = (u64, String);
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub(crate) struct NewFile {
+pub struct NewFile {
     pub hash: u64,
     pub index: u64,
     pub path: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub(crate) struct DuplicatedFile {
+pub struct DuplicatedFile {
     pub hash: u64,
     pub idx: u64, // u64::MAX == none
     pub old_paths: Vec<String>,
@@ -37,7 +37,7 @@ pub(crate) struct DuplicatedFile {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub(crate) struct PatchedFile {
+pub struct PatchedFile {
     pub old_hash: u64,
     pub new_hash: u64,
     pub index: u64,

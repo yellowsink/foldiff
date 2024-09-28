@@ -3,10 +3,12 @@ use crate::common::{MAGIC_BYTES, VERSION_NUMBER_1_1_0, VERSION_NUMBER_1_0_0_R, V
 use anyhow::{bail, Context, Result};
 use std::io::{Read, Seek, Write};
 use zstd::Encoder;
+use crate::reporting::{AutoSpin, Reporter};
 
 // 1.0.0-r to v1.1.0
-fn upgrade_100r_110(mut src: impl Read+Seek, mut dst: impl Write+Seek) -> Result<()> {
-	let s = cliutils::create_spinner("Upgrading from FLDF 1.0.0-r to FLDF 1.1.0", false, true);
+fn upgrade_100r_110<TSpin: Reporter+Sync>(mut src: impl Read+Seek, mut dst: impl Write+Seek) -> Result<()> {
+	let s = TSpin::new("Upgrading from FLDF 1.0.0-r to FLDF 1.1.0");
+	let s = AutoSpin::spin(&s);
 	
 	// write magic bytes and version number to dst
 	dst.write_all(&MAGIC_BYTES).context("Failed to write to destination file")?;
@@ -35,16 +37,16 @@ fn upgrade_100r_110(mut src: impl Read+Seek, mut dst: impl Write+Seek) -> Result
 	// copy the rest of the data over (blobs)
 	std::io::copy(&mut src, &mut dst)?;
 	
-	cliutils::finish_spinner(&s, false);
+	s.all_good();
 	Ok(())
 }
 
-pub fn auto_upgrade(mut src: impl Read+Seek, dst: impl Write+Seek) -> Result<()> {
+pub fn auto_upgrade<TSpin: Reporter+Sync>(mut src: impl Read+Seek, dst: impl Write+Seek) -> Result<()> {
 	let ver = DiffManifest::verify_and_read_ver(&mut src)?;
 	
 	match ver {
 		VERSION_NUMBER_LATEST => bail!("Diff is up to date! (FLDF v{}.{}.{})", ver[1], ver[2], ver[3]),
-		VERSION_NUMBER_1_0_0_R => upgrade_100r_110(src, dst),
+		VERSION_NUMBER_1_0_0_R => upgrade_100r_110::<TSpin>(src, dst),
 		_ => unreachable!(),
 	}
 }
