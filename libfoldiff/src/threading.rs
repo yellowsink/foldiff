@@ -1,7 +1,4 @@
-use std::fs::File;
-use std::path::Path;
 
-// threading error handling utils
 
 /// Adds err to errs and returns
 #[macro_export]
@@ -51,21 +48,10 @@ macro_rules! handle_res_parit {
 	}};
 }
 
-/// creates a file and all necessary parent directories
-pub fn create_file(p: &Path) -> std::io::Result<File> {
-	if let Some(p) = p.parent() {
-		std::fs::create_dir_all(p)?;
-	}
-	File::create(p)
-}
-
-/// If a vec is empty, do nothing. If it contains some errors, aggregate and return them.
-#[macro_export]
-macro_rules! aggregate_errors {
-	($e:expr) => {{
-		let e = $e;
-		if !e.is_empty() {
-			anyhow::bail!("Failed with multiple errors:\n{}", e.into_iter().map(|e| format!("{e}")).collect::<Vec<_>>().join("\n"));
-		}
-	}};
+/// Sets the number of threads in the global thread pool.
+/// Must be called before any tasks are run in it.
+pub fn set_num_threads(thr: usize) -> Result<(), impl std::error::Error> {
+	rayon::ThreadPoolBuilder::new()
+		.num_threads(thr)
+		.build_global()
 }

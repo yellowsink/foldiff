@@ -55,7 +55,7 @@ pub fn diff(
 	new: &mut (impl Read + Seek),
 	dest: &mut (impl Write + Seek),
 	level: Option<u8>,
-	threads: Option<u32>,
+	threads: Option<usize>,
 	old_len_hint: Option<u64>,
 	new_len_hint: Option<u64>,
 ) -> Result<()> {
@@ -105,12 +105,12 @@ pub fn diff(
 		enc.include_checksum(false)?; // we do our own redundancy checks
 		enc.include_contentsize(false)?; // not particularly helpful to us
 		if let Some(t) = threads {
-			enc.multithread(t)?;
+			enc.multithread(t as u32)?;
 		}
 		
 		// run the compression
 		std::io::copy(&mut throttled_new, &mut enc)?;
-		_ = enc.finish()?;
+		let _ = enc.finish()?;
 
 		let diff_len = counting_writer.writer_bytes();
 		// seek back
@@ -268,7 +268,7 @@ Look at me. Look at me. I'm the captain now.".as_bytes();
 			}
 			else {
 				eprintln!("generating an 'old' file...");
-				_ = remove_file(".unittest_new_file");
+				let _ = remove_file(".unittest_new_file");
 				let mut file = File::create_new(".unittest_old_file").expect("Failed to create old file for unit test");
 				let size = 5 * (1u64 << 30); // 5gib
 				let mut written = 0u64;
@@ -371,7 +371,7 @@ Look at me. Look at me. I'm the captain now.".as_bytes();
 		}
 
 		eprintln!("pass :tada:");
-		_ = remove_file(".unittest_diff_scratch");
-		_ = remove_file(".unittest_fin_scratch");
+		let _ = remove_file(".unittest_diff_scratch");
+		let _ = remove_file(".unittest_fin_scratch");
 	}
 }

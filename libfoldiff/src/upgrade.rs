@@ -1,5 +1,5 @@
-use crate::cliutils;
-use crate::foldiff::{DiffManifest, MAGIC_BYTES, VERSION_NUMBER_1_0_0_R, VERSION_NUMBER_1_1_0, VERSION_NUMBER_LATEST};
+use crate::manifest::DiffManifest;
+use crate::common::{MAGIC_BYTES, VERSION_NUMBER_1_1_0, VERSION_NUMBER_1_0_0_R, VERSION_NUMBER_LATEST};
 use anyhow::{bail, Context, Result};
 use std::io::{Read, Seek, Write};
 use zstd::Encoder;

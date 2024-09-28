@@ -1,15 +1,14 @@
-use crate::foldiff::DiffManifest;
+use crate::manifest::DiffManifest;
 use crate::hash::hash_file;
-use crate::{aggregate_errors, cliutils};
+use crate::aggregate_errors;
 use anyhow::{bail, Context, Result};
-use indicatif::ProgressBar;
 use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
 /// Checks if two directories are identical, printing results to stdout
-pub fn test_equality(r1: &Path, r2: &Path) -> Result<()> {
+pub fn test_dir_equality(r1: &Path, r2: &Path) -> Result<()> {
 	let spinner = cliutils::create_spinner("Scanning folders", true, true);
 	test_equality_internal(r1, r2, Path::new(""), &spinner)?;
 	cliutils::finish_spinner(&spinner, true);
@@ -109,7 +108,7 @@ fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &ProgressBar) -> 
 }
 
 /// Checks if two directories match the given manifest, printing results to stdout
-pub fn verify(r1: &Path, r2: &Path, manifest: &DiffManifest) -> Result<()> {
+pub fn verify_against_diff(r1: &Path, r2: &Path, manifest: &DiffManifest) -> Result<()> {
 	let spn = cliutils::create_spinner("Verifying files", true, true);
 	
 	let errors: Vec<_> =

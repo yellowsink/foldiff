@@ -2,19 +2,10 @@ use std::fs::File;
 use anyhow::{bail, ensure, Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
-use crate::foldiff::{ApplyingDiff, DiffManifest, DiffingDiff, FldfCfg};
+use libfoldiff::FoldiffCfg;
+use libfoldiff::manifest::DiffManifest;
 
-mod foldiff;
-mod zstddiff;
-mod hash;
 mod cliutils;
-mod utilities;
-mod verify;
-mod upgrade;
-
-fn fetch_logical_procs() -> u32 {
-	num_cpus::get() as u32
-}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -32,7 +23,7 @@ struct Cli {
 	force: bool,
 	/// How many threads to use ("-T 0" = number of logical processors)
 	#[arg(short = 'T', long, default_value_t = 0)]
-	threads: u32
+	threads: usize
 }
 
 // picking the default value for -Z:
@@ -98,19 +89,17 @@ fn main() -> Result<()> {
 
 	let threads =
 		if cli.threads == 0 {
-			fetch_logical_procs()
+			num_cpus::get()
 		}
 		else {
 			cli.threads
 		};
 
-	rayon::ThreadPoolBuilder::new()
-		.num_threads(threads as usize)
-		.build_global()?;
+	libfoldiff::set_num_threads(threads)?;
 
 	match &cli.command {
 		Commands::Diff { diff, new, old, level_diff, level_new } => {
-			let cfg = FldfCfg {
+			let cfg = FoldiffCfg {
 				threads,
 				level_new: *level_new,
 				level_diff: *level_diff
@@ -143,7 +132,7 @@ fn main() -> Result<()> {
 			}
 
 			// scan the file system
-			let mut diff_state = DiffingDiff::scan(old_root, new_root)?;
+			let mut diff_state = libfoldiff::diffing::scan_to_diff(old_root, new_root)?;
 			//println!("{diff_state:?}");
 
 			// emit the diff to disk
@@ -169,35 +158,35 @@ fn main() -> Result<()> {
 				std::fs::remove_dir_all(new).context("Failed to remove folder")?;
 			}
 
-			let mut diff_state = ApplyingDiff::read_from_file(&PathBuf::from(diff))?;
+			let mut diff_state = libfoldiff::applying::read_diff_from_file(&PathBuf::from(diff))?;
 			diff_state.apply(old_root, new_root)?;
 		},
 		Commands::Verify { new, old, diff } => {
 			if let Some(diff) = diff {
 				let f = File::open(diff).context("Failed to open diff file to verify with")?;
 				let manifest = DiffManifest::read_from(f).context("Failed to read diff file to verify with")?;
-				verify::verify(Path::new(old), Path::new(new), &manifest)?;
+				libfoldiff::verify::verify_against_diff(Path::new(old), Path::new(new), &manifest)?;
 			}
 			else {
-				verify::test_equality(Path::new(old), Path::new(new))?;
+				libfoldiff::verify::test_dir_equality(Path::new(old), Path::new(new))?;
 			}
 		},
 		Commands::Upgrade { new, old } => {
 			if std::fs::exists(new).context("Failed to check for destination existence")? {
 				if !cli.force {
 					let cont = cliutils::confirm("Destination file exists, overwrite it?")?;
-					
+
 					if !cont {
 						bail!("Destination file already exists");
 					}
 				}
-				
+
 				std::fs::remove_file(new).context("Failed to remove file")?;
 			}
 			let fold = File::open(old).context("Failed to open old diff file")?;
 			let fnew = File::create(new).context("Failed to create destination file")?;
-			
-			upgrade::auto_upgrade(fold, fnew)?;
+
+			libfoldiff::upgrade::auto_upgrade(fold, fnew)?;
 		},
 	}
 

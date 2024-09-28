@@ -2,10 +2,15 @@
 - multithread diffing
    * diffing (maybe)
    * compressing (maybe)
-- foldiff file stats after diffing, before applying, and standalone
+- `foldiff stats` after diffing, before applying, and standalone
+- replace `anyhow` with custom error types
+- write custom threading utilities
 
 ## pending
 - `foldiff upgrade` - upgrade older manifests to new ones
+- move core `foldiff` functionality to `libfoldiff`
+  * significant refactors
+  * decouple logic from `indicatif` and `cliutils`
 
 ## 1.2.0
 - switch to FLDF v1.1.0

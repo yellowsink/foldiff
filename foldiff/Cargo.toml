@@ -1,0 +1,16 @@
+[package]
+name = "foldiff"
+authors = ["Hazel Atkinson"]
+version = "1.2.0"
+edition = "2021"
+license-file = "../LICENSE.md"
+description = "A general purpose diffing tool that operates on folders of mixed text/binary files."
+
+[dependencies]
+libfoldiff = { path = "../libfoldiff" }
+anyhow = "1.0.86"
+clap = { version = "4.5.17", features = ["derive"] }
+dialoguer = { version = "0.11.0", features = [] }
+indicatif = "0.17.8"
+console = "0.15.8"
+num_cpus = "1.16.0"
