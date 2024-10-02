@@ -1,7 +1,7 @@
 [package]
 name = "foldiff"
 authors = ["Hazel Atkinson"]
-version = "1.3.0"
+version = "1.3.1"
 edition = "2021"
 license-file = "../LICENSE.md"
 description = "A general purpose diffing tool that operates on folders of mixed text/binary files."

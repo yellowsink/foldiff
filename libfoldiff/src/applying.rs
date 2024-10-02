@@ -1,7 +1,7 @@
-use crate::common::create_file;
+use crate::common::{copy_rl, copy_rl_hash, create_file};
 use crate::manifest::DiffManifest;
 use crate::reporting::{AutoSpin, CanBeWrappedBy, Reporter, ReporterSized, ReportingMultiWrapper};
-use crate::{aggregate_errors, handle_res_parit, hash, zstddiff};
+use crate::{aggregate_errors, handle_res_async, handle_res_parit, hash, throw_err_async, zstddiff};
 use anyhow::{anyhow, Context};
 use memmap2::Mmap;
 use rayon::prelude::*;
@@ -32,7 +32,8 @@ impl ApplyingDiff {
 
 		let diff_map = &**self.read.as_ref().ok_or(anyhow!("Cannot call apply() on a state without a set `read` prop"))?;
 
-		let num_duped_files: u64 = self.manifest.duplicated_files.iter().map(|d| d.new_paths.len() as u64).sum();
+		let num_duped_copy: usize = self.manifest.duplicated_files.iter().filter(|d| d.idx == u64::MAX).map(|d| d.new_paths.len()).sum();
+		let num_duped_create: usize = self.manifest.duplicated_files.iter().filter(|d| d.idx != u64::MAX).map(|d| d.new_paths.len()).sum();
 
 		// incr bar and finish if done
 		let inc_n = |n: usize, b: &TBar| {
@@ -46,8 +47,8 @@ impl ApplyingDiff {
 		// progress reporting
 		let wrap = TWrap::new();
 		let spn = TSpin::new("Applying diff").add_to(&wrap);
-		let bar_untouched = <TBar as ReporterSized>::new("Copying unchanged files", self.manifest.untouched_files.len() + (num_duped_files as usize)).add_to(&wrap);
-		let bar_new = <TBar as ReporterSized>::new("Creating new files", self.manifest.new_files.len()).add_to(&wrap);
+		let bar_untouched = <TBar as ReporterSized>::new("Copying unchanged files", self.manifest.untouched_files.len() + num_duped_copy).add_to(&wrap);
+		let bar_new = <TBar as ReporterSized>::new("Creating new files", self.manifest.new_files.len() + num_duped_create).add_to(&wrap);
 		let bar_patched = <TBar as ReporterSized>::new("Applying patched files", self.manifest.patched_files.len()).add_to(&wrap);
 
 		let as1 = AutoSpin::spin(&spn);
@@ -74,23 +75,7 @@ impl ApplyingDiff {
 								let old_path = self.old_root.join(p);
 								let new_path = self.new_root.join(p);
 								
-								let real_hash =
-									// if we're on *nix, try reflinking
-									if cfg!(unix) && reflink::reflink(&old_path, &new_path).is_ok() {
-										// reflinked, check the hash
-										handle_res_parit!(hash::hash_file(&old_path), "Failed to hash file copied from {}", p)
-									}
-									else {
-										// reflink failed or we're on windows, copy
-										// copying in kernel space would be slightly faster but we have to check the hash
-										let mut src = handle_res_parit!(File::open(&old_path), "Failed to open file to copy from {}", p);
-										let mut dst = handle_res_parit!(create_file(&new_path), "Failed to create file to copy to {}", p);
-	
-										let mut hw = hash::XXHashStreamer::new(&mut dst);
-										handle_res_parit!(std::io::copy(&mut src, &mut hw), "Failed to copy file {}", p);
-	
-										hw.finish()
-									};
+								let real_hash = handle_res_parit!(copy_rl_hash(old_path, new_path));
 								
 								if real_hash != h {
 									return Some(anyhow!("Found {p} was different to expected (hash was {real_hash}, not {})", h));
@@ -131,56 +116,73 @@ impl ApplyingDiff {
 						}
 
 						// okay, now copy to all the new places then
-						let mut checks: Vec<_> = d.new_paths
-							.par_iter()
-							.filter_map(|p| {
-								// if we have a file on disk, then perform an in-kernel copy for speed
-								if d.idx == u64::MAX {
-									// ensure we have a parent directory
-									let dest_path = self.new_root.join(p);
-									if let Some(par) = dest_path.parent() {
-										handle_res_parit!(std::fs::create_dir_all(par), "Failed to create parent dir to copy file {p}");
-									}
+						// if we have a file on disk, then perform an in-kernel copy for speed
+						let mut checks: Vec<_> =
+							if d.idx == u64::MAX {
+								d.new_paths
+									.par_iter()
+									.filter_map(|p| {
+										// ensure we have a parent directory
+										let dest_path = self.new_root.join(p);
+										if let Some(par) = dest_path.parent() {
+											handle_res_parit!(std::fs::create_dir_all(par), "Failed to create parent dir to copy file {p}");
+										}
 
-									handle_res_parit!(std::fs::copy(self.old_root.join(&d.old_paths[0]), dest_path), "Failed to copy file {p}");
+										handle_res_parit!(copy_rl(self.old_root.join(&d.old_paths[0]), dest_path), "Failed to copy file {p}");
+										None
+									})
+									.collect()
+							}
+							else {
+								// we need to copy out of ourself
+								let blob = if let Some(t) = self.blobs_new.get(d.idx as usize) {
+									*t as usize
 								}
 								else {
-									// we need to copy out of ourself
-									let blob = if let Some(t) = self.blobs_new.get(d.idx as usize) {
-										*t as usize
-									}
-									else {
-										return Some(anyhow!("new file {} had an out-of-range index pointing to its data", p));
-									};
+									throw_err_async!(errs, anyhow!("new file {} had an out-of-range index pointing to its data", d.new_paths[0]));
+								};
 
-									// read length
-									let len = u64::from_be_bytes(*diff_map[blob..].first_chunk().unwrap()) as usize;
-									let blob = blob + 8; // advance past length
+								// read length
+								let len = u64::from_be_bytes(*diff_map[blob..].first_chunk().unwrap()) as usize;
+								let blob = blob + 8; // advance past length
+								
+								// copy one out
+								let p = &d.new_paths[0];
+								let mut read = Cursor::new(&diff_map[blob..(blob + len)]);
+								let f = handle_res_async!(errs, create_file(&self.new_root.join(p)), "Failed to create new file {p} to write to");
+								let mut writer = hash::XXHashStreamer::new(f);
 
-									// TODO: reflink
-									// copy
-									let mut read = Cursor::new(&diff_map[blob..(blob + len)]);
-									let f = handle_res_parit!(create_file(&self.new_root.join(p)), "Failed to create new file {p} to write to");
-									let mut writer = hash::XXHashStreamer::new(f);
+								handle_res_async!(errs, std::io::copy(&mut read, &mut writer));
 
-									handle_res_parit!(std::io::copy(&mut read, &mut writer));
-
-									// check hash
-									let rh = writer.finish();
-									if rh != d.hash {
-										return Some(anyhow!("Newly created file {p} does not match expected data"))
-									}
+								// check hash
+								let rh = writer.finish();
+								if rh != d.hash {
+									throw_err_async!(errs, anyhow!("Newly created file {p} does not match expected data"));
 								}
-								None
-							})
-							.collect();
+								
+								// copy to the rest
+								d.new_paths
+									.par_iter()
+									.skip(1)
+									.filter_map(|p| {
+										// ensure we have a parent directory
+										let dest_path = self.new_root.join(p);
+										if let Some(par) = dest_path.parent() {
+											handle_res_parit!(std::fs::create_dir_all(par), "Failed to create parent dir to copy file {p}");
+										}
+
+										handle_res_parit!(copy_rl(self.old_root.join(&d.old_paths[0]), dest_path), "Failed to copy file {p}");
+										None
+									})
+									.collect()
+							};
 
 						if !checks.is_empty() {
 							errs.lock().unwrap().extend(checks.drain(..));
 							return;
 						}
 
-						inc_n(d.new_paths.len(), &bar_untouched);
+						inc_n(d.new_paths.len(), if d.idx == u64::MAX { &bar_untouched } else { &bar_new });
 					}
 				});
 			}

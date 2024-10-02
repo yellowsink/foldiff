@@ -1,7 +1,7 @@
 [package]
 name = "libfoldiff"
 authors = ["Hazel Atkinson"]
-version = "1.3.0"
+version = "1.3.1"
 edition = "2021"
 license-file = "../LICENSE.md"
 description = "A general purpose diffing library for the FDLF format."

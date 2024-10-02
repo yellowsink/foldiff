@@ -23,6 +23,15 @@ macro_rules! handle_res_async {
 			v.unwrap()
 		}
 	}};
+	($errs:expr, $res:expr) => {{
+		let v = $res;
+		if let Err(e) = v {
+			throw_err_async!($errs, anyhow::anyhow!(format!("{e:?}")));
+		}
+		else {
+			v.unwrap()
+		}
+	}};
 }
 
 /// unwraps res and, if it's an error, returns Some(err)

@@ -6,6 +6,9 @@
 - replace `anyhow` with custom error types
 - write custom threading utilities
 
+## 1.3.1
+- reflinks now apply for duplicated files too
+
 ## 1.3.0
 - `foldiff upgrade` - upgrade older manifests to new ones
 - move core `foldiff` functionality to `libfoldiff`
