@@ -9,9 +9,9 @@ mod cliutils;
 
 #[derive(Parser, Debug)]
 #[command(
-	version = "v1.2.0",
+	version = "v1.3.0",
 	about,
-	long_version = "v1.2.0
+	long_version = "v1.3.0
    writing fldf v1.1.0
    reading fldf 1.0.0-r, v1.1.0"
 )]

@@ -70,16 +70,30 @@ impl ApplyingDiff {
 						self.manifest.untouched_files
 							.par_iter()
 							.filter_map(|(h, p)| {
-								// std::fs::copy would be faster, but we want to verify the hash
-								let mut src = handle_res_parit!(File::open(self.old_root.join(p)), "Failed to open file to copy from {}", p);
-								let mut dst = handle_res_parit!(create_file(&self.new_root.join(p)), "Failed to create file to copy to {}", p);
-
-								let mut hw = hash::XXHashStreamer::new(&mut dst);
-								handle_res_parit!(std::io::copy(&mut src, &mut hw), "Failed to copy file {}", p);
-
-								let rh = hw.finish();
-								if rh != *h {
-									return Some(anyhow!("Found {p} was different to expected (hash was {rh}, not {})", *h));
+								let h = *h;
+								let old_path = self.old_root.join(p);
+								let new_path = self.new_root.join(p);
+								
+								let real_hash =
+									// if we're on *nix, try reflinking
+									if cfg!(unix) && reflink::reflink(&old_path, &new_path).is_ok() {
+										// reflinked, check the hash
+										handle_res_parit!(hash::hash_file(&old_path), "Failed to hash file copied from {}", p)
+									}
+									else {
+										// reflink failed or we're on windows, copy
+										// copying in kernel space would be slightly faster but we have to check the hash
+										let mut src = handle_res_parit!(File::open(&old_path), "Failed to open file to copy from {}", p);
+										let mut dst = handle_res_parit!(create_file(&new_path), "Failed to create file to copy to {}", p);
+	
+										let mut hw = hash::XXHashStreamer::new(&mut dst);
+										handle_res_parit!(std::io::copy(&mut src, &mut hw), "Failed to copy file {}", p);
+	
+										hw.finish()
+									};
+								
+								if real_hash != h {
+									return Some(anyhow!("Found {p} was different to expected (hash was {real_hash}, not {})", h));
 								}
 
 								inc(&bar_untouched);
@@ -143,6 +157,7 @@ impl ApplyingDiff {
 									let len = u64::from_be_bytes(*diff_map[blob..].first_chunk().unwrap()) as usize;
 									let blob = blob + 8; // advance past length
 
+									// TODO: reflink
 									// copy
 									let mut read = Cursor::new(&diff_map[blob..(blob + len)]);
 									let f = handle_res_parit!(create_file(&self.new_root.join(p)), "Failed to create new file {p} to write to");

@@ -6,11 +6,12 @@
 - replace `anyhow` with custom error types
 - write custom threading utilities
 
-## pending
+## 1.3.0
 - `foldiff upgrade` - upgrade older manifests to new ones
 - move core `foldiff` functionality to `libfoldiff`
   * significant refactors
   * decouple logic from `indicatif` and `cliutils`
+- use reflinks when copying unchanged files to reduce disk usage on filesystems such as btrfs, xfs, and apfs
 
 ## 1.2.0
 - switch to FLDF v1.1.0
