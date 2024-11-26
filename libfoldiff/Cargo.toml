@@ -13,12 +13,12 @@ derivative = "2.2.0"
 infer = "0.16.0"
 rmp-serde = "1.3.0"
 serde = { version = "1.0.209", features = ["derive"] }
-serde_bytes = "0.11.15"
 twox-hash = "1.6.3"
 zstd = { version = "0.13.2", features = ["zstdmt"] }
 rayon = "1.10.0"
 memmap2 = "0.9.4"
 reflink = "0.1.3"
+camino = "1.1.9"
 
 [dev-dependencies]
 tempfile = "3.12.0"

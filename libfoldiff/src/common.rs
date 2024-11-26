@@ -1,6 +1,6 @@
 use std::fs::File;
-use std::path::Path;
 use anyhow::Context;
+use camino::Utf8Path;
 use crate::hash;
 
 pub const MAGIC_BYTES: [u8; 4] = *b"FLDF";
@@ -17,7 +17,7 @@ pub struct FoldiffCfg {
 }
 
 /// creates a file and all necessary parent directories
-pub fn create_file(p: &Path) -> std::io::Result<File> {
+pub fn create_file(p: &Utf8Path) -> std::io::Result<File> {
 	if let Some(p) = p.parent() {
 		std::fs::create_dir_all(p)?;
 	}
@@ -25,7 +25,7 @@ pub fn create_file(p: &Path) -> std::io::Result<File> {
 }
 
 // Reflinks or copies a file and hashes it
-pub fn copy_rl_hash(src_p: impl AsRef<Path>, dst_p: impl AsRef<Path>) -> anyhow::Result<u64> {
+pub fn copy_rl_hash(src_p: impl AsRef<Utf8Path>, dst_p: impl AsRef<Utf8Path>) -> anyhow::Result<u64> {
 	let src_p = src_p.as_ref();
 	let dst_p = dst_p.as_ref();
 	
@@ -47,7 +47,7 @@ pub fn copy_rl_hash(src_p: impl AsRef<Path>, dst_p: impl AsRef<Path>) -> anyhow:
 	}
 }
 
-pub fn copy_rl(src_p: impl AsRef<Path>, dst_p: impl AsRef<Path>) -> std::io::Result<()> {
+pub fn copy_rl(src_p: impl AsRef<Utf8Path>, dst_p: impl AsRef<Utf8Path>) -> std::io::Result<()> {
 	let src_p = src_p.as_ref();
 	let dst_p = dst_p.as_ref();
 	

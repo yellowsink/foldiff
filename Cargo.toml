@@ -4,3 +4,6 @@ members = [
 	"foldiff",
 	"libfoldiff",
 ]
+
+#[profile.test]
+#opt-level = 3

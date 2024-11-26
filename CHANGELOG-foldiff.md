@@ -6,6 +6,10 @@
 - replace `anyhow` with custom error types
 - write custom threading utilities
 
+## pending
+- use `camino` for better path handling internally
+- remove unused dependency on serde-bytes
+
 ## 1.3.1
 - reflinks now apply for duplicated files too
 

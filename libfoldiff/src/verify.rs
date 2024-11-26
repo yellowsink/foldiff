@@ -5,19 +5,19 @@ use anyhow::{bail, Context, Result};
 use rayon::prelude::*;
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use crate::reporting::{AutoSpin, Reporter};
 
 /// Checks if two directories are identical, printing results to stdout
-pub fn test_dir_equality<TSpin: Reporter+Sync>(r1: &Path, r2: &Path) -> Result<()> {
+pub fn test_dir_equality<TSpin: Reporter+Sync>(r1: &Utf8Path, r2: &Utf8Path) -> Result<()> {
 	let spn = TSpin::new("Scanning folders");
 	let aspn = AutoSpin::spin(&spn);
-	test_equality_internal(r1, r2, Path::new(""), &spn)?;
+	test_equality_internal(r1, r2, "".into(), &spn)?;
 	aspn.all_good();
 	Ok(())
 }
 
-fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &(impl Reporter+Sync)) -> Result<()> {
+fn test_equality_internal(r1: &Utf8Path, r2: &Utf8Path, p: &Utf8Path, spn: &(impl Reporter+Sync)) -> Result<()> {
 	// stat both paths
 	let path1 = r1.join(p);
 	let path2 = r2.join(p);
@@ -45,8 +45,8 @@ fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &(impl Reporter+S
 			spn.suspend(|| {
 				println!(
 					"{:?} is a file, but {:?} is a folder, thus they mismatch.",
-					Path::new(r1.file_name().unwrap()).join(p),
-					Path::new(r2.file_name().unwrap()).join(p)
+					Utf8Path::new(r1.file_name().unwrap()).join(p),
+					Utf8Path::new(r2.file_name().unwrap()).join(p)
 				);
 			});
 		}
@@ -55,8 +55,8 @@ fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &(impl Reporter+S
 		spn.suspend(|| {
 			println!(
 				"{:?} is a folder, but {:?} is a file, thus they mismatch.",
-				Path::new(r1.file_name().unwrap()).join(p),
-				Path::new(r2.file_name().unwrap()).join(p)
+				Utf8Path::new(r1.file_name().unwrap()).join(p),
+				Utf8Path::new(r2.file_name().unwrap()).join(p)
 			);
 		});
 	}
@@ -66,8 +66,8 @@ fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &(impl Reporter+S
 		let files1: std::io::Result<Vec<_>> = fs::read_dir(path1)?.collect();
 		let files2: std::io::Result<Vec<_>> = fs::read_dir(path2)?.collect();
 
-		let set1 = BTreeSet::from_iter(files1?.iter().map(|e| e.file_name()));
-		let set2 = BTreeSet::from_iter(files2?.iter().map(|e| e.file_name()));
+		let set1 = BTreeSet::<Utf8PathBuf>::from_iter(files1?.iter().filter_map(|e| e.file_name().to_str().map(Into::into)));
+		let set2 = BTreeSet::<Utf8PathBuf>::from_iter(files2?.iter().filter_map(|e| e.file_name().to_str().map(Into::into)));
 
 		let mut rec_res = anyhow::Ok(());
 		// do the loops in parallel
@@ -110,10 +110,10 @@ fn test_equality_internal(r1: &Path, r2: &Path, p: &Path, spn: &(impl Reporter+S
 }
 
 /// Checks if two directories match the given manifest, printing results to stdout
-pub fn verify_against_diff<TSpin: Reporter+Sync>(r1: &Path, r2: &Path, manifest: &DiffManifest) -> Result<()> {
+pub fn verify_against_diff<TSpin: Reporter+Sync>(r1: &Utf8Path, r2: &Utf8Path, manifest: &DiffManifest) -> Result<()> {
 	let spn = TSpin::new("Verifying files");
 	let aspn = AutoSpin::spin(&spn);
-	
+
 	let errors: Vec<_> =
 		manifest.untouched_files
 			.par_iter()

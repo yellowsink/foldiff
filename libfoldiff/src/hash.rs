@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::hash::Hasher;
 use std::io::{Read, Write};
-use std::path::Path;
+use camino::Utf8Path;
 use twox_hash::XxHash64;
 
 #[derive(Clone, Default)]
@@ -36,7 +36,7 @@ pub fn hash_stream(s: &mut impl Read) -> std::io::Result<u64> {
 	Ok(h.finish())
 }
 
-pub fn hash_file(p: &Path) -> anyhow::Result<u64> {
+pub fn hash_file(p: &Utf8Path) -> anyhow::Result<u64> {
 	Ok(hash_stream(&mut File::open(p)?)?)
 }
 

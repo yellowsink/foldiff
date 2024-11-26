@@ -7,7 +7,7 @@ use memmap2::Mmap;
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::{Cursor, Read, Seek};
-use std::path::{Path, PathBuf};
+use camino::{Utf8Path, Utf8PathBuf};
 use std::sync::Mutex;
 
 /// An in-memory representation of a diff, used for the applying process
@@ -17,8 +17,8 @@ pub struct ApplyingDiff {
 	blobs_new: Vec<u64>,   // offset into diff file
 	blobs_patch: Vec<u64>, // offset into diff file
 	read: Option<Mmap>, // the diff file map
-	old_root: PathBuf,
-	new_root: PathBuf,
+	old_root: Utf8PathBuf,
+	new_root: Utf8PathBuf,
 }
 
 impl ApplyingDiff {
@@ -26,7 +26,7 @@ impl ApplyingDiff {
 		TWrap: ReportingMultiWrapper,
 		TSpin: Reporter + CanBeWrappedBy<TWrap> + Sync,
 		TBar: ReporterSized + CanBeWrappedBy<TWrap> + Sync
-	>(&mut self, old_root: PathBuf, new_root: PathBuf) -> anyhow::Result<()> {
+	>(&mut self, old_root: Utf8PathBuf, new_root: Utf8PathBuf) -> anyhow::Result<()> {
 		self.old_root = old_root;
 		self.new_root = new_root;
 
@@ -297,7 +297,7 @@ impl ApplyingDiff {
 }
 
 /// handles initialising an in-memory applying state from disk
-pub fn read_diff_from_file(path: &Path) -> anyhow::Result<ApplyingDiff> {
+pub fn read_diff_from_file(path: &Utf8Path) -> anyhow::Result<ApplyingDiff> {
 	let f = File::open(path).context("Failed to open file to read diff")?;
 
 	// safety: UB if the underlying diff is modified by someone else
@@ -317,7 +317,7 @@ pub fn read_diff_from(reader: &mut (impl Read + Seek)) -> anyhow::Result<Applyin
 	let mut new_self = ApplyingDiff::default();
 	new_self.manifest = manifest;
 
-	let mut new_blob_count = [0u8, 0, 0, 0, 0, 0, 0, 0];
+	let mut new_blob_count = [0u8; 8];
 	reader
 		.read_exact(&mut new_blob_count)
 		.context("Failed to read new file count")?;
@@ -328,7 +328,7 @@ pub fn read_diff_from(reader: &mut (impl Read + Seek)) -> anyhow::Result<Applyin
 		new_self.blobs_new.push(reader.stream_position()?);
 
 		// read blob length
-		let mut len = [0u8, 0, 0, 0, 0, 0, 0, 0];
+		let mut len = [0u8; 8];
 		reader
 			.read_exact(&mut len)
 			.context("Failed to read new file length")?;
@@ -340,7 +340,7 @@ pub fn read_diff_from(reader: &mut (impl Read + Seek)) -> anyhow::Result<Applyin
 			.context("Failed to seek while skipping new file")?;
 	}
 
-	let mut patched_blob_count = [0u8, 0, 0, 0, 0, 0, 0, 0];
+	let mut patched_blob_count = [0u8; 8];
 	reader
 		.read_exact(&mut patched_blob_count)
 		.context("Failed to read patched file count")?;

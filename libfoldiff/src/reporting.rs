@@ -71,7 +71,7 @@ impl<'a, R: Reporter+Sync> AutoSpin<'a, R> {
 
 		s
 	}
-	
+
 	/// finishes autospinning then calls done() on the internal object.
 	/// mainly useful to extend the lifetime of autospin in a neater way than explicit drop().
 	pub fn all_good(self) {
